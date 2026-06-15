@@ -18,7 +18,7 @@ st.markdown("""
     td { text-align: center !important; padding: 10px !important; }
     h1, h3, h4 { font-weight: 600 !important; letter-spacing: -0.5px !important; }
     </style>
-""", unsafe_allow_value=True)
+""", unsafe_allow_html=True)
 
 # Internal Session Buffer Engine to prevent erasing history on browser reload
 if 'oi_history' not in st.session_state:
