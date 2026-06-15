@@ -13,7 +13,6 @@ if 'global_history' in st.session_state and st.session_state.global_history:
     h_list = st.session_state.global_history
     
     rows = []
-    # Loop backward to place the latest data points chronologically at the top
     for item in reversed(h_list):
         if item['Asset'] == asset_filter:
             rows.append({
@@ -31,6 +30,10 @@ if 'global_history' in st.session_state and st.session_state.global_history:
     if rows:
         st.table(pd.DataFrame(rows))
     else:
-        st.info("Gathering background stream blocks. Updates display inside 60 seconds...")
+        st.info("⏳ Gathering background stream blocks. Updates display inside 60 seconds...")
 else:
-    st.info("Establishing cloud server matrix handshake pipeline logs. Please wait...")
+    st.info("⏳ Establishing cloud server matrix handshake pipeline logs. Please wait...")
+
+# --- DEVELOPER FOOTER BRANDING ---
+st.markdown("---")
+st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
