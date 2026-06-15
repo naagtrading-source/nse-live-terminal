@@ -108,3 +108,11 @@ if dash_data:
 
     time.sleep(60)
     st.rerun()
+
+
+
+# [Keep all your existing code in app.py exactly the same, just add these 3 lines at the very bottom]
+
+# --- DEVELOPER FOOTER BRANDING ---
+st.markdown("---")
+st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
