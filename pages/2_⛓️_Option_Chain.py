@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
+import io
 
 st.set_page_config(page_title="NSE Live Option Chain", layout="wide")
 
@@ -9,14 +10,16 @@ st.caption("Reference Architecture: NiftyTrader Symmetrical Core Option Chain Da
 
 asset = st.selectbox("Select Chain Base Asset", ["NIFTY", "BANKNIFTY"])
 
-# Safe execution block checklist to prevent IndexError crashes
 if 'global_history' in st.session_state and st.session_state.global_history:
     asset_records = [r for r in st.session_state.global_history if r['Asset'] == asset]
     
     if asset_records:
         latest_record = asset_records[-1]
         spot = float(latest_record['Spot'].replace(',', '')) if isinstance(latest_record['Spot'], str) else latest_record['Spot']
-        df = pd.read_json(latest_record['Raw_Data'])
+        
+        # FIX: Wrapped raw string structure into io.StringIO memory stream buffer to bypass file path lookups
+        raw_json_string = latest_record['Raw_Data']
+        df = pd.read_json(io.StringIO(raw_json_string))
         
         st.metric(label=f"Current {asset} Spot Premium Price", value=f"{spot:,.2f}")
         
