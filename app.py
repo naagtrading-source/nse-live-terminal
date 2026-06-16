@@ -1,15 +1,11 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import io
-import time
-import math
 import pytz
-import streamlit.components.v1 as components
+import math
 from datetime import datetime, timedelta
 
-# Lock configuration parameters straight onto the single main interface node
-st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
+st.set_page_config(page_title="Flow Terminal - Home", layout="wide", page_icon="🚨")
 
 # Injected browser-side auto-refresh alongside clean terminal CSS styles
 st.markdown("""
@@ -29,11 +25,9 @@ st.markdown("""
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
 st.caption("Real-Time Multi-Asset Block Activity Monitors | Index & Stock Option Scanners")
 
-# --- INITIALIZE GLOBAL CACHE LAYER ---
 if 'global_history' not in st.session_state:
     st.session_state.global_history = []
 
-# --- CALIBRATE EXPIRY TIMELINES ---
 def get_expiry_dates():
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
@@ -44,8 +38,7 @@ def get_expiry_dates():
     
     nxt_month = curr_wk.replace(day=28) + timedelta(days=5)
     last_day = nxt_month - timedelta(days=nxt_month.day)
-    days_to_thurs = (last_day.weekday() - 3) % 7
-    monthly = last_day - timedelta(days=days_to_thurs)
+    monthly = last_day - timedelta(days=(last_day.weekday() - 3) % 7)
     if monthly < today:
         nxt_month_alt = last_day + timedelta(days=5)
         last_day_alt = nxt_month_alt + timedelta(days=25)
@@ -57,7 +50,6 @@ def get_expiry_dates():
         "monthly": f"Monthly Expiry ({monthly.strftime('%d-%b')})"
     }
 
-# --- BLACK-SCHOLES PRICING MATH FOR DELTA ---
 def calculate_bs_delta(spot, strike, option_type):
     try:
         t = 30 / 365; v = 0.12; r = 0.05
@@ -69,7 +61,6 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-# --- BACKGROUND DATA INGESTION ---
 def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
     try:
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -89,10 +80,22 @@ def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
         rows = []
         step = 50 if symbol == "NIFTY" else 100 if symbol == "BANKNIFTY" else (5 if spot < 500 else 10 if spot < 1500 else 20)
         atm = round(spot / step) * step
-        expiry_multiplier = 1.0 if "Current" in expiry_label else 1.6 if "Next" in expiry_label else 2.4
         
         ist_tz = pytz.timezone('Asia/Kolkata')
-        time_seed = datetime.now(ist_tz).second
+        now_dt = datetime.now(ist_tz)
+        time_seed = now_dt.second
+        
+        # --- FIXED: MATHEMATICAL TIME-TO-EXPIRY DECAY ENGINE ---
+        # Extracts dates from label (e.g., "18-Jun") to calculate exact remaining calendar days
+        try:
+            cleaned_label = expiry_label.split('(')[1].split(')')[0]
+            expiry_date = datetime.strptime(f"{cleaned_label}-{now_dt.year}", "%d-%b-%Y").date()
+            days_to_expiry = max(0.5, (expiry_date - now_dt.date()).days)
+        except:
+            days_to_expiry = 2.0  # Safe default fallback
+            
+        # Calibrate base ATM straddle premiums depending on asset types
+        base_premium_pool = 110.0 if symbol == "NIFTY" else 380.0 if symbol == "BANKNIFTY" else (spot * 0.025)
         
         for i in range(-10, 10):
             strike = atm + (i * step)
@@ -105,22 +108,26 @@ def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
             else:
                 c_chg, p_chg = int(-base_oi * 0.4), int(-base_oi * 0.3)
             
+            # 1. Compute Exact Intrinsic Value (Real Market Settlement Floor)
             intrinsic_c = max(0.0, spot - strike)
             intrinsic_p = max(0.0, strike - spot)
-            extrinsic_value = max(6.0, (145 - abs(i) * 11.5) * expiry_multiplier + (time_seed * 0.15))
             
-            rows.append({'Strike': strike, 'Type': 'Call', 'OI': max(1000, int(base_oi*4.5)), 'Chg_OI': c_chg, 'Volume': max(100, int(base_vol * vol_multiplier)), 'LTP': round(intrinsic_c + extrinsic_value, 1)})
-            rows.append({'Strike': strike, 'Type': 'Put', 'OI': max(1000, int(base_oi*4.2)), 'Chg_OI': p_chg, 'Volume': max(100, int(base_vol * vol_multiplier * 0.95)), 'LTP': round(intrinsic_p + extrinsic_value, 1)})
+            # 2. Compute Decaying Extrinsic Premium Spreads (Theta Decay Model)
+            # Extrinsic pricing shrinks smoothly as days_to_expiry runs down to 0 on Thursday
+            time_decay_factor = math.sqrt(days_to_expiry / 5.0)
+            extrinsic_value = base_premium_pool * time_decay_factor * math.exp(-0.25 * abs(i)) + (time_seed * 0.08)
+            
+            # 3. Compile Total Accurate LTP Option Prices
+            ltp_c = max(0.5, round(intrinsic_c + extrinsic_value, 1))
+            ltp_p = max(0.5, round(intrinsic_p + extrinsic_value, 1))
+            
+            rows.append({'Strike': strike, 'Type': 'Call', 'OI': max(1000, int(base_oi*4.5)), 'Chg_OI': c_chg, 'Volume': max(100, int(base_vol * vol_multiplier)), 'LTP': ltp_c})
+            rows.append({'Strike': strike, 'Type': 'Put', 'OI': max(1000, int(base_oi*4.2)), 'Chg_OI': p_chg, 'Volume': max(100, int(base_vol * vol_multiplier * 0.95)), 'LTP': ltp_p})
         return spot, pd.DataFrame(rows)
     except:
         return 100.0, pd.DataFrame()
 
-# Stream background records using an anchored IST timestamp clock
 expiry_map = get_expiry_dates()
-ist_tz = pytz.timezone('Asia/Kolkata')
-ts = datetime.now(ist_tz).strftime("%H:%M:%S")
-
-# Continuous network fetch loop execution node
 all_monitored_assets = [
     ("NIFTY", False), ("BANKNIFTY", False),
     ("RELIANCE", True), ("HDFCBANK", True), ("ICICIBANK", True), ("INFOSYS", True)
@@ -129,7 +136,6 @@ all_monitored_assets = [
 for asset, is_stk in all_monitored_assets:
     target_exp_label = expiry_map["monthly"] if is_stk else expiry_map["current"]
     spot, df = fetch_nse_market_feed(asset, target_exp_label, is_stk)
-    
     if not df.empty:
         st.session_state.global_history.append({
             'Timestamp': ts, 'Asset': asset, 'IsStock': is_stk, 'Expiry': target_exp_label, 'Spot': spot, 'Raw_Data': df.to_json()
@@ -138,7 +144,6 @@ for asset, is_stk in all_monitored_assets:
 if len(st.session_state.global_history) > 300:
     st.session_state.global_history = st.session_state.global_history[-300:]
 
-# --- INTERFACE RENDER CORES ---
 tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 def process_and_render_view(is_stock_view, dropdown_options):
