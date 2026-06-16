@@ -2,13 +2,16 @@ import streamlit as st
 import pandas as pd
 import json
 import io
-import time
 import math
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Unusual Volume Activity", layout="wide")
 
+# FIX: Injected identical browser auto-refresh tag here to prevent cloud thread hangs
 st.markdown("""
+    <head>
+        <meta http-equiv="refresh" content="60">
+    </head>
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
     .strike-card-container { margin-bottom: 25px; }
@@ -71,20 +74,13 @@ def process_and_render_view(is_stock_view, dropdown_options):
         timeline_records = []
         
         for item in h_list:
-            # FIX: Forced strict string normalization and uniform case checking to guarantee index data loads properly
             item_asset_upper = str(item['Asset']).upper().strip()
             asset_selection_upper = str(asset_selection).upper().strip()
-            
             item_is_stock = item.get('IsStock', False) or (item_asset_upper not in ["NIFTY", "BANKNIFTY"])
             
-            if item_is_stock != is_stock_view:
-                continue
-                
-            if not is_stock_view and item.get('Expiry') != selected_expiry:
-                continue
-                
-            if item_asset_upper != asset_selection_upper:
-                continue
+            if item_is_stock != is_stock_view: continue
+            if not is_stock_view and item.get('Expiry') != selected_expiry: continue
+            if item_asset_upper != asset_selection_upper: continue
                 
             curr_ts = item['Timestamp']
             df_snap = pd.read_json(io.StringIO(item['Raw_Data']))
@@ -178,15 +174,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
             st.info("⏳ Tracking options arrays for anomalies... Updates populate shortly.")
     else:
         st.info("⏳ Synchronizing tracking matrices...")
-
 with tab1:
     process_and_render_view(False, ["NIFTY", "BANKNIFTY"])
 with tab2:
     process_and_render_view(True, ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFOSYS"])
-
-time.sleep(60)
-st.rerun()
-
-# --- DEVELOPER FOOTER BRANDING ---
-st.markdown("---")
-st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
