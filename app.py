@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
-# Injected browser-side auto-refresh alongside clean terminal CSS styles
 st.markdown("""
     <head>
         <meta http-equiv="refresh" content="60">
@@ -27,22 +26,34 @@ st.markdown("""
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
 st.caption("Real-Time Multi-Asset Block Activity Monitors | Index & Stock Option Scanners")
 
-# --- INITIALIZE GLOBAL CACHE LAYER ---
+# --- HISTORICAL PERSISTENCE BUFFER MECHANISM ---
 if 'global_history' not in st.session_state:
     st.session_state.global_history = []
 
-# --- CALIBRATE EXPIRY TIMELINES ---
-def get_expiry_dates():
+def get_expiry_dates_for_asset(asset_name, is_stock=False):
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
     
-    days_to_thursday = (3 - today.weekday()) % 7
-    curr_wk = today + timedelta(days=days_to_thursday)
+    if is_stock:
+        target_weekday = 3 
+    elif asset_name == "BANKNIFTY":
+        target_weekday = 2 
+    else:
+        target_weekday = 3 
+        
+    days_to_expiry = (target_weekday - today.weekday()) % 7
+    curr_wk = today + timedelta(days=days_to_expiry)
+    
+    if days_to_expiry == 0:
+        curr_wk = today
+
     next_wk = curr_wk + timedelta(days=7)
     
-    nxt_month = curr_wk.replace(day=28) + timedelta(days=5)
+    nxt_month = today.replace(day=28) + timedelta(days=5)
     last_day = nxt_month - timedelta(days=nxt_month.day)
-    monthly = last_day - timedelta(days=(last_day.weekday() - 3) % 7)
+    monthly_days_to_thurs = (last_day.weekday() - 3) % 7
+    monthly = last_day - timedelta(days=monthly_days_to_thurs)
+    
     if monthly < today:
         nxt_month_alt = last_day + timedelta(days=5)
         last_day_alt = nxt_month_alt + timedelta(days=25)
@@ -54,7 +65,6 @@ def get_expiry_dates():
         "monthly": f"Monthly Expiry ({monthly.strftime('%d-%b')})"
     }
 
-# --- BLACK-SCHOLES PRICING MATH FOR DELTA ---
 def calculate_bs_delta(spot, strike, option_type):
     try:
         t = 30 / 365; v = 0.12; r = 0.05
@@ -66,7 +76,6 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-# --- BACKGROUND DATA INGESTION ---
 def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
     try:
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -91,22 +100,24 @@ def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
         now_dt = datetime.now(ist_tz)
         time_seed = now_dt.second
         
-        # --- MATHEMATICAL TIME-TO-EXPIRY DECAY ENGINE ---
         try:
             cleaned_label = expiry_label.split('(')[1].split(')')[0]
             expiry_date = datetime.strptime(f"{cleaned_label}-{now_dt.year}", "%d-%b-%Y").date()
-            days_to_expiry = max(0.5, (expiry_date - now_dt.date()).days)
+            days_to_expiry = max(0.2, (expiry_date - now_dt.date()).days)
         except:
-            days_to_expiry = 2.0
+            days_to_expiry = 1.0
             
-        base_premium_pool = 110.0 if symbol == "NIFTY" else 380.0 if symbol == "BANKNIFTY" else (spot * 0.025)
+        base_premium_pool = 110.0 if symbol == "NIFTY" else 360.0 if symbol == "BANKNIFTY" else (spot * 0.022)
         
         for i in range(-10, 10):
             strike = atm + (i * step)
             base_oi = 60000 - abs(i)*2200
-            vol_multiplier = 6.8 if (i == -1 or i == 1 or i == 3) else 1.0
-            base_vol = (18000 if is_stock else 35000) - abs(i)*600 + (time_seed * 15)
             
+            # Formulate staggered volume spikes across individual ticks
+            vol_multiplier = 6.8 if (i == -1 or i == 1 or i == 3) else 1.0
+            base_vol = (18000 if is_stock else 35000) - abs(i)*600 + (time_seed * 12)
+            
+            # Dynamic data simulation sequencing
             if time_seed % 2 == 0:
                 c_chg, p_chg = int(base_oi * 2.2), int(base_oi * 1.8)
             else:
@@ -127,14 +138,9 @@ def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
     except:
         return 100.0, pd.DataFrame()
 
-# --- FIX: MOVED DEFINITION OF 'ts' DIRECTLY ABOVE DISPATCH LOOPS ---
-expiry_map = get_expiry_dates()
+expiry_map = get_expiry_dates_for_asset("NIFTY", False)
 ist_tz = pytz.timezone('Asia/Kolkata')
 ts = datetime.now(ist_tz).strftime("%H:%M:%S")
-
-# Check and reset memory block structure if old cached keys exist
-if st.session_state.global_history and 'Expiry' not in st.session_state.global_history[0]:
-    st.session_state.global_history = []
 
 all_monitored_assets = [
     ("NIFTY", False), ("BANKNIFTY", False),
@@ -142,29 +148,35 @@ all_monitored_assets = [
 ]
 
 for asset, is_stk in all_monitored_assets:
-    target_exp_label = expiry_map["monthly"] if is_stk else expiry_map["current"]
+    asset_expiry_map = get_expiry_dates_for_asset(asset, is_stk)
+    target_exp_label = asset_expiry_map["monthly"] if is_stk else asset_expiry_map["current"]
     spot, df = fetch_nse_market_feed(asset, target_exp_label, is_stk)
     if not df.empty:
         st.session_state.global_history.append({
             'Timestamp': ts, 'Asset': asset, 'IsStock': is_stk, 'Expiry': target_exp_label, 'Spot': spot, 'Raw_Data': df.to_json()
         })
 
-if len(st.session_state.global_history) > 300:
-    st.session_state.global_history = st.session_state.global_history[-300:]
+# Keep up to 600 data records in memory to allow logs to stack continuously
+if len(st.session_state.global_history) > 600:
+    st.session_state.global_history = st.session_state.global_history[-600:]
 
-# --- INTERFACE RENDER CORES ---
 tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 def process_and_render_view(is_stock_view, dropdown_options):
+    placeholder_asset = dropdown_options[0]
+    local_expiry_map = get_expiry_dates_for_asset(placeholder_asset, is_stock_view)
+    
     if not is_stock_view:
         c1, c2 = st.columns(2)
         with c1:
             asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{is_stock_view}")
+        local_expiry_map = get_expiry_dates_for_asset(asset_selection, False)
         with c2:
-            selected_expiry = st.selectbox("Select Expiry Series", [expiry_map["current"], expiry_map["next"], expiry_map["monthly"]], key=f"ex_{is_stock_view}")
+            selected_expiry = st.selectbox("Select Expiry Series", [local_expiry_map["current"], local_expiry_map["next"], local_expiry_map["monthly"]], key=f"ex_{is_stock_view}")
     else:
         asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{is_stock_view}")
-        selected_expiry = expiry_map["monthly"]
+        local_expiry_map = get_expiry_dates_for_asset(asset_selection, True)
+        selected_expiry = local_expiry_map["monthly"]
         st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
     if st.session_state.global_history:
@@ -208,8 +220,20 @@ def process_and_render_view(is_stock_view, dropdown_options):
             
             if not filtered_df.empty:
                 st.markdown("### 📋 Spike-Isolated Activity Logs")
-                for strike_price, group in filtered_df.groupby('Target Strike'):
-                    sorted_group = group.sort_values(by='Timestamp', ascending=False)
+                
+                # --- FIX: RESTRUCTURED THE GROUP SORT TO PREVENT LOG ERASE BLOCKS ---
+                # Pulls all strikes matching criteria and builds an exhaustive historical log index
+                unique_strikes = sorted(filtered_df['Target Strike'].unique())
+                
+                for strike_price in unique_strikes:
+                    strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
+                    sorted_group = strike_group.sort_values(by='Timestamp', ascending=False)
+                    
+                    # Deduplicate any identical entries sharing exact metrics within the same second footprint
+                    sorted_group = sorted_group.drop_duplicates(subset=['Timestamp', 'Type', 'Quadrant', 'Volume'])
+                    
+                    # Limit the visible table output to the 8 most recent historical spikes per strike
+                    sorted_group = sorted_group.head(8)
                     
                     ce_sub = sorted_group[sorted_group['Type'] == 'CE']
                     pe_sub = sorted_group[sorted_group['Type'] == 'PE']
@@ -239,7 +263,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
                         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
                         <style>
                             body {{ background-color: #0b0c10; color: #e4e6eb; font-family: system-ui, -apple-system, sans-serif; padding: 0; margin: 0; }}
-                            .strike-card {{ background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }}
+                            .strike-card {{ background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); margin-bottom: 20px; }}
                             .summary-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
                             .ribbon-section {{ background-color: #1b1f2e; border-radius: 4px; padding: 8px 12px; font-size: 0.82rem; border: 1px solid #2d334a; text-align: center; }}
                             .stat-label {{ color: #a0a5b5; font-size: 0.75rem; font-weight: 500; }}
@@ -247,6 +271,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
                             .panel-title-ce {{ background-color: #0c4a6e; color: #38bdf8; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                             .panel-title-pe {{ background-color: #7c2d12; color: #fb923c; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                             th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.72rem; text-align: center; }}
+                            td {{ text-align: center; font-size: 0.85rem; vertical-align: middle; }}
                         </style>
                     </head>
                     <body>
@@ -265,7 +290,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
                     </body>
                     </html>
                     """
-                    components.html(complete_card_html, height=360, scrolling=True)
+                    components.html(complete_card_html, height=380, scrolling=True)
             else:
                 st.info("⏳ Processing live data snapshots. Matrix cards map within 60s...")
         else:
@@ -278,6 +303,5 @@ with tab1:
 with tab2:
     process_and_render_view(True, ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFOSYS"])
 
-# --- DEVELOPER FOOTER BRANDING ---
 st.markdown("---")
 st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
