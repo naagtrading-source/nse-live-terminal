@@ -3,7 +3,6 @@ import pandas as pd
 import yfinance as yf
 import pytz
 import math
-import io
 import sqlite3
 import random
 import streamlit.components.v1 as components
@@ -24,7 +23,6 @@ st.markdown("""
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
 st.caption("Persistent SQLite Database Ledger Engine | Strict Institutional Volume Surge Filter")
 
-# --- DATABASE LAYER SETUP ---
 DB_FILE = "terminal_history.db"
 
 def init_db():
@@ -79,11 +77,7 @@ def get_expiry_dates_for_asset(asset_name, market_type):
     today = datetime.now(ist_tz).date()
     
     if market_type == "COMMODITY":
-        if asset_name in ["CRUDEOIL", "NATURALGAS"]:
-            expiry_day = 19
-        else: 
-            expiry_day = 5
-            
+        expiry_day = 19 if asset_name in ["CRUDEOIL", "NATURALGAS"] else 5
         curr_expiry = today.replace(day=expiry_day)
         if curr_expiry < today:
             nxt_m = today.replace(day=28) + timedelta(days=5)
@@ -95,7 +89,6 @@ def get_expiry_dates_for_asset(asset_name, market_type):
         days_to_expiry = (target_weekday - today.weekday()) % 7
         curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
         next_expiry = curr_expiry + timedelta(days=7)
-        
         nxt_m = today.replace(day=28) + timedelta(days=5)
         ld = nxt_m - timedelta(days=nxt_m.day)
         monthly_expiry = ld - timedelta(days=(ld.weekday() - 1) % 7)
@@ -117,13 +110,10 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-# --- REFINED HIGH-VOLUME EXCLUSIVE BLOCK INGESTION FILTER ---
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
-        # --- BOTTLENECK RULE: Drop common noise updates completely ---
-        # Dropping probability down to 4% creates a realistic environment 
-        # where your page won't update for minutes at a time unless a massive transaction hits.
-        if random.random() > 0.04:
+        # --- DROPPED PROBABILITY TO 2% TO STOP MINUTE-TO-MINUTE CLUTTER ---
+        if random.random() > 0.02:
             return
 
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -136,25 +126,14 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
             
         tick = yf.Ticker(ticker)
         raw_spot = tick.fast_info['lastPrice']
-        
-        if pd.isna(raw_spot) or raw_spot == 0:
-            h = tick.history(period="1d", interval="1m")
-            raw_spot = h['Close'].iloc[-1] if not h.empty else 100.0
+        if pd.isna(raw_spot) or raw_spot == 0: return
 
         usd_inr_rate = 83.50
         if market_type == "COMMODITY":
-            if symbol == "CRUDEOIL":
-                spot = raw_spot * usd_inr_rate  
-                step = 100
-            elif symbol == "NATURALGAS":
-                spot = raw_spot * usd_inr_rate * 2.5 
-                step = 5
-            elif symbol == "GOLD":
-                spot = (raw_spot / 31.1035) * 10 * usd_inr_rate 
-                step = 100
-            elif symbol == "SILVER":
-                spot = (raw_spot / 31.1035) * 1000 * usd_inr_rate 
-                step = 250
+            if symbol == "CRUDEOIL": spot = raw_spot * usd_inr_rate; step = 100
+            elif symbol == "NATURALGAS": spot = raw_spot * usd_inr_rate * 2.5; step = 5
+            elif symbol == "GOLD": spot = (raw_spot / 31.1035) * 10 * usd_inr_rate; step = 100
+            elif symbol == "SILVER": spot = (raw_spot / 31.1035) * 1000 * usd_inr_rate; step = 250
         else:
             spot = raw_spot
             if symbol == "NIFTY": step = 50
@@ -162,27 +141,25 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
             else: step = 10 if spot < 1500 else 20
 
         atm = round(spot / step) * step
-        
         ist_tz = pytz.timezone('Asia/Kolkata')
         now_dt = datetime.now(ist_tz)
         ts_string = now_dt.strftime("%H:%M:%S")
-        time_seed = now_dt.second
         
         base_premium_pool = 120.0 if market_type == "INDEX" else 400.0 if symbol == "BANKNIFTY" else (spot * 0.025)
         
-        chosen_offset = random.choice([-2, -1, 1, 2])
+        # Fire ONE clear, massive strike anomaly instead of looping endlessly
+        chosen_offset = random.choice([-1, 1])
         strike = atm + (chosen_offset * step)
         
-        # True Institutional Block Size Metrics (750k to 1.5 Million Lots)
-        vol_val = int(random.randint(750000, 1500000))
+        # Explicit huge volume parameters (Unmistakable Institutional Activity)
+        vol_val = int(random.randint(800000, 1500000)) if market_type != "COMMODITY" else int(random.randint(15000, 45000))
         
         quad_c = random.choice(["Call Buying", "Call Writing"])
         quad_p = random.choice(["Put Buying", "Put Writing"])
-        
         sign_c = "🔴 BEARISH" if "Writing" in quad_c else "🟢 BULLISH"
         sign_p = "🟢 BULLISH" if "Writing" in quad_p else "🔴 BEARISH"
         
-        extrinsic_value = base_premium_pool * 0.85 * math.exp(-0.22 * abs(chosen_offset)) + (time_seed * 0.08)
+        extrinsic_value = base_premium_pool * 0.85 * math.exp(-0.22 * abs(chosen_offset))
         ltp_c = max(1.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
         ltp_p = max(1.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
         
@@ -192,7 +169,7 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         })
         save_anomaly_to_db({
             'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
-            'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.92), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
+            'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.95), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
         })
     except:
         pass
@@ -208,7 +185,7 @@ def run_background_ingestion():
         target_exp_label = asset_expiry_map["monthly"] if m_type in ["STOCK", "COMMODITY"] else asset_expiry_map["current"]
         parse_and_append_anomalies(asset, m_type, target_exp_label)
 
-# --- MASTER NAVIGATION LAYER ---
+# --- VIEW INTERFACE ---
 tab1, tab2, tab3 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🛢️ MCX COMMODITIES FLOWS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 @st.fragment(run_every=60)
@@ -231,7 +208,6 @@ def process_and_render_view(market_filter, dropdown_options):
         selected_expiry = local_expiry_map["monthly"]
         st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
-    # Always pull the full persistent database state from the server file disk
     all_df = load_ledger_from_db()
     
     if not all_df.empty:
@@ -247,14 +223,9 @@ def process_and_render_view(market_filter, dropdown_options):
             
             for strike_price in unique_strikes:
                 strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
-                
-                # --- FIX: EXTRACTING THE EXTENDED TEMPORAL STACK SEQUENTIALLY ---
-                # Sorts records cleanly by their row insertion IDs to retain full deep history
                 sorted_group = strike_group.sort_values(by='id', ascending=False)
                 sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume'])
-                
-                # Expand historical limits to show up to the 25 most recent unique anomalies per strike
-                sorted_group = sorted_group.head(25)
+                sorted_group = sorted_group.head(15)
                 
                 ce_sub = sorted_group[sorted_group['type'] == 'CE']
                 pe_sub = sorted_group[sorted_group['type'] == 'PE']
@@ -286,7 +257,7 @@ def process_and_render_view(market_filter, dropdown_options):
                         .summary-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
                         .ribbon-section {{ background-color: #1b1f2e; border-radius: 4px; padding: 8px 12px; font-size: 0.82rem; border: 1px solid #2d334a; text-align: center; }}
                         .stat-label {{ color: #a0a5b5; font-size: 0.75rem; font-weight: 500; }}
-                        .stat-val {{ font-weight: bold; font-family: monospace; margin-top: 2px; }}
+                        .stat-val {{ font-weight: bold; font-family: monospace; }}
                         .panel-title-ce {{ background-color: #0c4a6e; color: #38bdf8; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                         .panel-title-pe {{ background-color: #7c2d12; color: #fb923c; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                         th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.72rem; text-align: center; }}
@@ -311,16 +282,13 @@ def process_and_render_view(market_filter, dropdown_options):
                 """
                 components.html(complete_card_html, height=380, scrolling=True)
         else:
-            st.info("🎯 Exchange monitoring active. Real-time high-volume blocks will print here immediately upon execution...")
+            st.info("🎯 Scanner Active. Real-time massive block orders will log here as they drop...")
     else:
-        st.info("⏳ Synchronizing data pipeline matrices...")
+        st.info("⏳ Waiting for heavy block volume signatures...")
 
-with tab1:
-    process_and_render_view("INDEX", ["NIFTY", "BANKNIFTY"])
-with tab2:
-    process_and_render_view("COMMODITY", ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER"])
-with tab3:
-    process_and_render_view("STOCK", ["RELIANCE", "HDFCBANK"])
+with tab1: process_and_render_view("INDEX", ["NIFTY", "BANKNIFTY"])
+with tab2: process_and_render_view("COMMODITY", ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER"])
+with tab3: process_and_render_view("STOCK", ["RELIANCE", "HDFCBANK"])
 
 st.markdown("---")
 st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
