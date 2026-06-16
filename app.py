@@ -5,6 +5,7 @@ import pytz
 import math
 import io
 import sqlite3
+import streamlit.components.v1 as components  # FIX: Restored missing HTML component library explicitly
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
@@ -81,13 +82,12 @@ def get_expiry_dates_for_asset(asset_name, market_type):
     today = datetime.now(ist_tz).date()
     
     if market_type == "COMMODITY":
-        # Commodities track monthly contract profiles cleanly
         nxt_month = today.replace(day=28) + timedelta(days=5)
         last_day = nxt_month - timedelta(days=nxt_month.day)
         curr_expiry = last_day
         next_expiry = curr_expiry + timedelta(days=30)
     else:
-        target_weekday = 1  # Tuesday Expiry Rule for Equity & Indices
+        target_weekday = 1  # Tuesday Expiry Rule
         days_to_expiry = (target_weekday - today.weekday()) % 7
         curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
         next_expiry = curr_expiry + timedelta(days=7)
@@ -113,13 +113,12 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-# --- INGESTION AND ABNORMAL VOLUME SCANNER CORES ---
+# --- INGESTION AND SCANNER CORES ---
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
-        # Resolve tickers across different market categories
         if symbol == "NIFTY": ticker = "^NSEI"
         elif symbol == "BANKNIFTY": ticker = "^NSEBANK"
-        elif symbol == "CRUDEOIL": ticker = "CL=F" # International Brent Crude anchor
+        elif symbol == "CRUDEOIL": ticker = "CL=F" 
         elif symbol == "NATURALGAS": ticker = "NG=F"
         elif symbol == "GOLD": ticker = "GC=F"
         elif symbol == "SILVER": ticker = "SI=F"
@@ -132,7 +131,6 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
             h = tick.history(period="1d", interval="1m")
             spot = h['Close'].iloc[-1] if not h.empty else 23950.0
             
-        # Calibrate explicit structural strike step profiles
         if symbol == "GOLD": step = 100
         elif symbol == "SILVER": step = 250
         elif symbol == "CRUDEOIL": step = 100
@@ -150,11 +148,10 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         
         base_premium_pool = 120.0 if market_type == "INDEX" else 400.0 if symbol == "BANKNIFTY" else (spot * 0.03)
         
-        for i in [-1, 1]:
+        # FIX: Scan a broader spread surrounding the ATM (+/-3 strikes) to capture past trends 
+        # seamlessly without dropping old strikes when the spot price drifts slightly.
+        for i in range(-3, 4):
             strike = atm + (i * step)
-            
-            # --- CRITICAL: ABNORMAL INSTANT SURGE TRIGGER LIMITERS ---
-            # Automatically prints blocks if volume speeds break normal limits
             vol_val = int(320000 + (now_dt.second * 1200))
             
             if time_seed % 2 == 0:
@@ -179,7 +176,6 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
     except:
         pass
 
-# Scan execution block
 all_monitored_assets = [
     ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
     ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
@@ -191,7 +187,7 @@ for asset, m_type in all_monitored_assets:
     target_exp_label = asset_expiry_map["monthly"] if m_type in ["STOCK", "COMMODITY"] else asset_expiry_map["current"]
     parse_and_append_anomalies(asset, m_type, target_exp_label)
 
-# Render main tab layouts
+# --- INTERFACE RENDER LAYER ---
 tab1, tab2, tab3 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🛢️ MCX COMMODITIES FLOWS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 def process_and_render_view(market_filter, dropdown_options):
