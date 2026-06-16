@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import yfinance as yf
 import json
 import io
 import time
@@ -8,91 +7,59 @@ from datetime import datetime
 
 st.set_page_config(page_title="Unusual Volume Activity", layout="wide")
 
-st.title("🚨 Unusual Institutional Volatility Spikes")
-st.caption("Intraday Multi-Line Strike Tracker & Real-Time Block Activity Log")
+# Modern, structured presentation styling injection
+st.markdown("""
+    <style>
+    .main { background-color: #0b0c10; color: #e4e6eb; }
+    .strike-card {
+        background-color: #12141d;
+        border: 1px solid #1f222e;
+        border-left: 5px solid #ff9f43;
+        border-radius: 6px;
+        padding: 15px;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+    .stTable, table { width: 100% !important; text-align: center !important; margin-bottom: 0px !important; }
+    th { background-color: #1a1d28 !important; color: #a0a5b3 !important; font-weight: bold !important; text-align: center !important; font-size: 0.8rem !important; }
+    td { text-align: center !important; font-size: 0.9rem !important; padding: 10px !important; }
+    .badge-nifty { background-color: #0284c7; color: white; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; }
+    .badge-bank { background-color: #dc2626; color: white; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; }
+    </style>
+""", unsafe_allow_html=True)
 
-# Initialize global cache list if it doesn't exist
+st.title("🚨 Unusual Institutional Volatility Spikes")
+st.caption("Intraday Multi-Line Strike Tracker & Grouped Block Activity Logs")
+
 if 'global_history' not in st.session_state:
     st.session_state.global_history = []
 
-def fetch_background_sync(symbol):
-    try:
-        ticker = "^NSEI" if symbol == "NIFTY" else "^NSEBANK"
-        tick = yf.Ticker(ticker)
-        spot = tick.fast_info['lastPrice']
-        if pd.isna(spot) or spot == 0:
-            h = tick.history(period="1d", interval="1m")
-            spot = h['Close'].iloc[-1] if not h.empty else 23900.0
-            
-        rows = []
-        atm = round(spot / 50) * 50 if symbol == "NIFTY" else round(spot / 100) * 100
-        step = 50 if symbol == "NIFTY" else 100
-        
-        for i in range(-10, 10):
-            strike = atm + (i * step)
-            base_oi = 70000 - abs(i)*2000
-            minute_seed = (int(time.time()) // 60) % 60
-            base_vol = 35000 - abs(i)*700 + (minute_seed * 950)
-            vol_multiplier = 5.2 if (i == 1 or i == -2 or i == 3) else 1.0
-            
-            c_chg = int(base_oi * (2.2 if i > 0 else 0.8) * (1 + minute_seed * 0.015))
-            p_chg = int(base_oi * (0.5 if i > 0 else 2.0) * (1 + minute_seed * 0.012))
-            
-            ltp_c = max(4.5, round(210 - (i * 13.5) + (minute_seed * 0.3), 1))
-            ltp_p = max(4.5, round(210 + (i * 13.5) + (minute_seed * 0.3), 1))
-            
-            rows.append({'Strike': strike, 'Type': 'Call', 'OI': max(1000, int(base_oi*4.5)), 'Chg_OI': c_chg, 'Volume': max(100, int(base_vol * vol_multiplier)), 'LTP': ltp_c})
-            rows.append({'Strike': strike, 'Type': 'Put', 'OI': max(1000, int(base_oi*4.8)), 'Chg_OI': p_chg, 'Volume': max(100, int(base_vol * vol_multiplier * 0.94)), 'LTP': ltp_p})
-        return spot, pd.DataFrame(rows)
-    except:
-        return None, pd.DataFrame()
-
-# --- FIX: INJECT CONTINUOUS STREAM ACCUMULATOR ---
-# Check the last logged timestamp to prevent duplicate or blank overwrites on the same minute loop
-ts = datetime.now().strftime("%H:%M:%S")
-
-if not st.session_state.global_history or st.session_state.global_history[-1]['Timestamp'] != ts:
-    for asset_name in ["NIFTY", "BANKNIFTY"]:
-        spot, df = fetch_background_sync(asset_name)
-        if not df.empty:
-            c_df = df[df['Type'] == 'Call']
-            p_df = df[df['Type'] == 'Put']
-            c_chg_sum = int(c_df['Chg_OI'].sum())
-            p_chg_sum = int(p_df['Chg_OI'].sum())
-            diff_oi = p_chg_sum - c_chg_sum
-            
-            st.session_state.global_history.append({
-                'Timestamp': ts, 'Asset': asset_name, 'Spot': spot, 'Calls_Chg': c_chg_sum, 'Puts_Chg': p_chg_sum,
-                'Diff': diff_oi, 'Diff_Pct': (diff_oi / max(1, c_chg_sum)) * 100,
-                'PCR': p_df['OI'].sum() / max(1, c_df['OI'].sum()),
-                'Vol_PCR': p_df['Volume'].sum() / max(1, c_df['Volume'].sum()),
-                'Sentiment': "🔴 Bearish" if diff_oi < 0 else "🟢 Bullish", 'Raw_Data': df.to_json()
-            })
-    
-    # Keep up to 60 data points in the rolling timeline history to avoid running out of memory
-    if len(st.session_state.global_history) > 120:
-        st.session_state.global_history = st.session_state.global_history[-120:]
-
 asset_filter = st.selectbox("Select Target Asset Index", ["NIFTY", "BANKNIFTY"])
 
-# --- PARSE AND RENDER CHARTS ---
 if st.session_state.global_history:
     h_list = st.session_state.global_history
     timeline_records = []
     
+    # Process historical memory cache blocks
     for item in h_list:
         curr_ts = item['Timestamp']
         df_snap = pd.read_json(io.StringIO(item['Raw_Data']))
         
         avg_vol = df_snap['Volume'].mean()
         df_snap['Unusual_Score'] = df_snap['Volume'] / avg_vol
-        spikes = df_snap[df_snap['Unusual_Score'] >= 2.2]
+        
+        # CRITICAL FILTER: Raised from 2.2 to 3.5 to screen out noise and capture ONLY massive volume block anomalies
+        spikes = df_snap[df_snap['Unusual_Score'] >= 3.5]
         
         for _, row in spikes.iterrows():
             quad = f"{row['Type']} Writing" if row['Chg_OI'] > 0 else f"{row['Type']} Buying"
             timeline_records.append({
-                'Timestamp': curr_ts, 'Asset': item['Asset'], 'Target Strike': int(row['Strike']),
-                'Quadrant': quad, 'Volume': int(row['Volume']), 'LTP': row['LTP']
+                'Timestamp': curr_ts,
+                'Asset': item['Asset'],
+                'Target Strike': int(row['Strike']),
+                'Quadrant': quad,
+                'Volume': int(row['Volume']),
+                'LTP': row['LTP']
             })
             
     all_unusual_df = pd.DataFrame(timeline_records)
@@ -101,9 +68,9 @@ if st.session_state.global_history:
         asset_unusual_df = all_unusual_df[all_unusual_df['Asset'] == asset_filter].copy()
         
         if not asset_unusual_df.empty:
+            # --- SECTION 1: INTRADAY TIME-SERIES VOLUME GRAPH ---
             st.markdown(f"### 📈 {asset_filter} Intraday Strike Volume Multi-Line Wave")
             
-            # Map clean time-series lines
             timestamps = sorted(asset_unusual_df['Timestamp'].unique())
             top_strikes = asset_unusual_df.groupby('Target Strike')['Volume'].sum().nlargest(4).index.tolist()
             
@@ -112,26 +79,53 @@ if st.session_state.global_history:
                 strike_series = []
                 for t in timestamps:
                     match = asset_unusual_df[(asset_unusual_df['Timestamp'] == t) & (asset_unusual_df['Target Strike'] == strike)]
-                    # If an entry is missing, populate with the previous value to keep the line smooth
                     strike_series.append(int(match['Volume'].iloc[-1]) if not match.empty else None)
                 chart_data[f"Strike {strike}"] = strike_series
                 
-            chart_df = pd.DataFrame(chart_data)
-            # Use forward-fill to smoothly bridge gaps where strikes didn't log an anomaly spike
-            chart_df = chart_df.ffill().fillna(0)
-            
+            chart_df = pd.DataFrame(chart_data).ffill().fillna(0)
             st.line_chart(chart_df, x='Timeline', y=[f"Strike {s}" for s in top_strikes])
             
-            st.markdown("### 📋 Real-Time Activity Log (Latest Spikes on Top)")
-            st.table(asset_unusual_df.sort_values(by='Timestamp', ascending=False)[['Timestamp', 'Target Strike', 'Quadrant', 'Volume', 'LTP']])
+            # --- SECTION 2: CRISP SEPARATED STRIKE CARDS ---
+            st.markdown("### 📋 Strike-Specific Isolated Institutional Logs")
+            
+            # Group records cleanly by their target strike price
+            grouped_strikes = asset_unusual_df.groupby('Target Strike')
+            
+            for strike_price, group_data in sorted(grouped_strikes, key=lambda x: x[0]):
+                # Sort group internally so that the newest timestamp is positioned directly at the top
+                sorted_group = group_data.sort_values(by='Timestamp', ascending=False)
+                
+                # Format clean visual table parameters
+                display_df = sorted_group[['Timestamp', 'Quadrant', 'Volume', 'LTP']].copy()
+                display_df['Volume'] = display_df['Volume'].map('{:,}'.format)
+                display_df['LTP'] = display_df['LTP'].map('{:,.1f}'.format)
+                display_df.columns = ['TIMESTAMP', 'FLOW DIRECTION (QUADRANT)', 'ACCUMULATED VOLUME', 'LAST TRADED PRICE (LTP)']
+                
+                badge_html = f"<span class='badge-nifty'>NIFTY</span>" if asset_filter == "NIFTY" else f"<span class='badge-bank'>BANKNIFTY</span>"
+                
+                # Generate clean HTML block containers for each contract strike
+                st.markdown(f"""
+                    <div class="strike-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                            <h4 style="margin: 0; color: #fff; font-size: 1.1rem;">
+                                {badge_html} Target Contract Strike Price: <span style="color: #ff9f43;">🎯 {strike_price}</span>
+                            </h4>
+                            <span style="color: #a0a5b3; font-size: 0.8rem; font-weight: bold; background-color: #1b1e29; padding: 4px 10px; border-radius: 20px;">Institutional Wave Block</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Render table immediately underneath the custom header card box
+                st.table(display_df)
+                st.markdown("<br>", unsafe_allow_html=True)
         else:
-            st.info("⏳ Scanning open positions... Live ticks will display within 60 seconds.")
+            st.info("⏳ Processing live order blocks... Massive surges will map shortly.")
     else:
-        st.info("⏳ Waiting for initial unusual option block activity to flag...")
+        st.info("⏳ Waiting for initial massive option block activity to clear filter criteria...")
 else:
     st.info("⏳ Synchronizing tracking matrices. Streaming active shortly...")
 
-# --- AUTOMATIC REFRESH HANDSHAKE SYNC ---
+# Auto-refresh loop sync handler (60 seconds)
 time.sleep(60)
 st.rerun()
 
