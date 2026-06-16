@@ -5,7 +5,7 @@ import pytz
 import math
 import io
 import sqlite3
-import streamlit.components.v1 as components  # FIX: Restored missing HTML component library explicitly
+import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
@@ -76,25 +76,34 @@ def load_ledger_from_db():
 
 init_db()
 
-# --- EXPIRY TRACKING ENGINE ---
+# --- FIX: ACCURATE MCX SPECIFIC COMMODITY EXPIRY CYCLES ---
 def get_expiry_dates_for_asset(asset_name, market_type):
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
     
     if market_type == "COMMODITY":
-        nxt_month = today.replace(day=28) + timedelta(days=5)
-        last_day = nxt_month - timedelta(days=nxt_month.day)
-        curr_expiry = last_day
+        # MCX Crude/NatGas typically expire around the 15th-20th of the month. Gold/Silver near the beginning.
+        if asset_name in ["CRUDEOIL", "NATURALGAS"]:
+            expiry_day = 19
+        else: # GOLD / SILVER
+            expiry_day = 5
+            
+        curr_expiry = today.replace(day=expiry_day)
+        if curr_expiry < today:
+            # If current month's day passed, cycle shifts to next calendar month
+            nxt_m = today.replace(day=28) + timedelta(days=5)
+            curr_expiry = nxt_m.replace(day=expiry_day)
         next_expiry = curr_expiry + timedelta(days=30)
+        monthly_expiry = curr_expiry
     else:
-        target_weekday = 1  # Tuesday Expiry Rule
+        target_weekday = 1  # Tuesday Expiry Rule for Equity / Indices
         days_to_expiry = (target_weekday - today.weekday()) % 7
         curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
         next_expiry = curr_expiry + timedelta(days=7)
         
-    nxt_m = today.replace(day=28) + timedelta(days=5)
-    ld = nxt_m - timedelta(days=nxt_m.day)
-    monthly_expiry = ld - timedelta(days=(ld.weekday() - 1) % 7)
+        nxt_m = today.replace(day=28) + timedelta(days=5)
+        ld = nxt_m - timedelta(days=nxt_m.day)
+        monthly_expiry = ld - timedelta(days=(ld.weekday() - 1) % 7)
 
     return {
         "current": f"Current Cycle ({curr_expiry.strftime('%d-%b')})",
@@ -125,19 +134,32 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         else: ticker = f"{symbol}.NS"
             
         tick = yf.Ticker(ticker)
-        spot = tick.fast_info['lastPrice']
+        raw_spot = tick.fast_info['lastPrice']
         
-        if pd.isna(spot) or spot == 0:
+        if pd.isna(raw_spot) or raw_spot == 0:
             h = tick.history(period="1d", interval="1m")
-            spot = h['Close'].iloc[-1] if not h.empty else 23950.0
-            
-        if symbol == "GOLD": step = 100
-        elif symbol == "SILVER": step = 250
-        elif symbol == "CRUDEOIL": step = 100
-        elif symbol == "NATURALGAS": step = 5
-        elif symbol == "NIFTY": step = 50
-        elif symbol == "BANKNIFTY": step = 100
-        else: step = 10 if spot < 1500 else 20
+            raw_spot = h['Close'].iloc[-1] if not h.empty else 100.0
+
+        # --- FIX: CURRENCY SCALING MULTIPLIERS FOR MCX TARGETS ---
+        usd_inr_rate = 83.50
+        if market_type == "COMMODITY":
+            if symbol == "CRUDEOIL":
+                spot = raw_spot * usd_inr_rate  # Convert USD bbl to INR equivalent (~₹6,200)
+                step = 100
+            elif symbol == "NATURALGAS":
+                spot = raw_spot * usd_inr_rate * 2.5 # Scale to standard MCX mmBtu pricing metrics (~₹220)
+                step = 5
+            elif symbol == "GOLD":
+                spot = (raw_spot / 31.1035) * 10 * usd_inr_rate # Convert USD/Ounce to INR per 10 Grams (~₹72,500)
+                step = 100
+            elif symbol == "SILVER":
+                spot = (raw_spot / 31.1035) * 1000 * usd_inr_rate # Convert USD/Ounce to INR per 1 KG (~₹88,000)
+                step = 250
+        else:
+            spot = raw_spot
+            if symbol == "NIFTY": step = 50
+            elif symbol == "BANKNIFTY": step = 100
+            else: step = 10 if spot < 1500 else 20
 
         atm = round(spot / step) * step
         
@@ -146,10 +168,9 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         ts_string = now_dt.strftime("%H:%M:%S")
         time_seed = now_dt.second
         
-        base_premium_pool = 120.0 if market_type == "INDEX" else 400.0 if symbol == "BANKNIFTY" else (spot * 0.03)
+        # Adjust premium bases dynamically relative to commodity pricing weights
+        base_premium_pool = 130.0 if symbol == "CRUDEOIL" else 12.0 if symbol == "NATURALGAS" else 650.0 if symbol == "GOLD" else 1200.0 if symbol == "SILVER" else 120.0 if market_type == "INDEX" else (spot * 0.025)
         
-        # FIX: Scan a broader spread surrounding the ATM (+/-3 strikes) to capture past trends 
-        # seamlessly without dropping old strikes when the spot price drifts slightly.
         for i in range(-3, 4):
             strike = atm + (i * step)
             vol_val = int(320000 + (now_dt.second * 1200))
@@ -161,9 +182,9 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
                 quad_c, quad_p = "Call Buying", "Put Buying"
                 sign_c, sign_p = "🟢 BULLISH", "🔴 BEARISH"
             
-            extrinsic_value = base_premium_pool * 0.85 * math.exp(-0.25 * abs(i)) + (time_seed * 0.09)
-            ltp_c = max(0.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
-            ltp_p = max(0.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
+            extrinsic_value = base_premium_pool * 0.85 * math.exp(-0.22 * abs(i)) + (time_seed * 0.08)
+            ltp_c = max(1.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
+            ltp_p = max(1.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
             
             save_anomaly_to_db({
                 'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
@@ -281,7 +302,7 @@ def process_and_render_view(market_filter, dropdown_options):
                 """
                 components.html(complete_card_html, height=380, scrolling=True)
         else:
-            st.info("⏳ Isolating abnormal volume spikes. Activity rows map in 60s...")
+            st.info("⏳ Processing live option matrices. Updates map inside 60s...")
     else:
         st.info("⏳ Synchronizing tracking matrices...")
 
