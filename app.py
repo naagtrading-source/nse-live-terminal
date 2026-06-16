@@ -17,8 +17,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- FIX: CACHE RESET MECHANISM ---
-# If global_history exists but lacks the updated 'Expiry' format keys, clear it to prevent app freezes
+# Symmetrical state cleanup layer
 if 'global_history' in st.session_state:
     if len(st.session_state.global_history) > 0 and 'Expiry' not in st.session_state.global_history[0]:
         st.session_state.global_history = []
@@ -49,7 +48,7 @@ def get_expiry_dates():
         f"Monthly Expiry ({monthly.strftime('%d-%b')})": monthly.strftime('%Y-%m-%d')
     }
 
-def fetch_nse_market_feed(symbol, expiry_key, is_stock=False):
+def fetch_nse_market_feed(symbol, expiry_label, is_stock=False):
     try:
         if symbol == "NIFTY": ticker = "^NSEI"
         elif symbol == "BANKNIFTY": ticker = "^NSEBANK"
@@ -68,18 +67,16 @@ def fetch_nse_market_feed(symbol, expiry_key, is_stock=False):
         rows = []
         step = 50 if symbol == "NIFTY" else 100 if symbol == "BANKNIFTY" else (5 if spot < 500 else 10 if spot < 1500 else 20)
         atm = round(spot / step) * step
-        expiry_multiplier = 1.0 if "Current" in expiry_key else 1.6 if "Next" in expiry_key else 2.4
+        expiry_multiplier = 1.0 if "Current" in expiry_label else 1.6 if "Next" in expiry_label else 2.4
         
         for i in range(-10, 10):
             strike = atm + (i * step)
             base_oi = 60000 - abs(i)*2200
             minute_seed = (int(time.time()) // 60) % 60
             
-            # Formulating controlled volatile institutional spikes
             vol_multiplier = 6.8 if (i == -1 or i == 1 or i == 3) else 1.0
             base_vol = (18000 if is_stock else 35000) - abs(i)*600 + (minute_seed * 800)
             
-            # Alternate directional spikes to verify buy/sell metrics dynamically
             if minute_seed % 2 == 0:
                 c_chg, p_chg = int(base_oi * 2.2), int(base_oi * 1.8)
             else:
@@ -105,16 +102,15 @@ dash_data = []
 ist_tz = pytz.timezone('Asia/Kolkata')
 ts = datetime.now(ist_tz).strftime("%H:%M:%S")
 
-# Consolidate background fetches for index and core options simultaneously
 all_monitored_assets = [
     ("NIFTY", False), ("BANKNIFTY", False),
     ("RELIANCE", True), ("HDFCBANK", True), ("ICICIBANK", True), ("INFOSYS", True)
 ]
 
 for asset, is_stk in all_monitored_assets:
-    # Stock options always evaluate matching the monthly expiry cycle row
-    target_exp = expiries[list(expiries.keys())[2]] if is_stk else selected_expiry
-    spot, df = fetch_nse_market_feed(asset, target_exp, is_stk)
+    # Stock options lock directly onto monthly text labels cleanly
+    target_exp_label = list(expiries.keys())[2] if is_stk else selected_expiry
+    spot, df = fetch_nse_market_feed(asset, target_exp_label, is_stk)
     
     if not df.empty:
         c_df = df[df['Type'] == 'Call']
@@ -129,11 +125,12 @@ for asset, is_stk in all_monitored_assets:
         v_pcr = p_df['Volume'].sum() / max(1, c_df['Volume'].sum())
         sentiment = "🔴 Bearish" if diff_oi < 0 else "🟢 Bullish"
         
+        # FIX: Appending the exact user-facing dropdown label key string to fix the search filter mismatch completely
         st.session_state.global_history.append({
-            'Timestamp': ts, 'Asset': asset, 'IsStock': is_stk, 'Expiry': target_exp, 'Spot': spot, 'Raw_Data': df.to_json()
+            'Timestamp': ts, 'Asset': asset, 'IsStock': is_stk, 'Expiry': target_exp_label, 'Spot': spot, 'Raw_Data': df.to_json()
         })
         
-        if not is_stk: # Render Index summaries to the primary executive dashboard
+        if not is_stk:
             dash_data.append([asset, ts, f"{spot:,.2f}", f"{pcr:.3f}", f"{diff_oi:,}", f"{diff_pct:+.1f}%", sentiment])
 
 if dash_data:
