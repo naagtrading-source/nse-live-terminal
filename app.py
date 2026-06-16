@@ -14,31 +14,24 @@ st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
     div[data-testid="stMetricValue"] { color: #2ebd85 !important; font-family: monospace; font-size: 1.6rem; }
-    
-    /* --- FIX: COMPACT RESPONSIVE TABLE CONFIGURATION WITH ELONGATED PADDING --- */
-    .stTable, table { width: 100% !important; table-layout: fixed !important; text-align: center !important; margin: 0 auto; }
-    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.65rem !important; font-weight: bold !important; padding: 3px 1px !important; letter-spacing: 0.2px; }
-    td { text-align: center !important; font-size: 0.72rem !important; padding: 4px 1px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-    
+    .stTable, table { width: 100% !important; table-layout: fixed !important; text-align: center !important; }
+    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.62rem !important; font-weight: bold !important; padding: 3px 1px !important; }
+    td { text-align: center !important; font-size: 0.68rem !important; padding: 4px 1px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
     .signal-card { border-radius: 6px; padding: 12px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); }
     .param-box { background: #131722; border: 1px solid #222634; border-radius: 4px; padding: 6px; text-align: center; }
     .param-lbl { font-size: 0.65rem; color: #a0a5b5; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
-    
-    /* --- FIX: FORCED SOLID CONTRAST COLOR MAPS TO RECTIFY GHOST TEXT --- */
     .param-val { font-size: 1.15rem; font-weight: 900 !important; font-family: monospace; margin-top: 2px; }
-    .val-white { color: #ffffff !important; text-shadow: 0 0 10px rgba(255,255,255,0.2); }
-    .val-red { color: #f6465d !important; text-shadow: 0 0 10px rgba(246,70,93,0.2); }
-    .val-green { color: #2ebd85 !important; text-shadow: 0 0 10px rgba(46,189,133,0.2); }
-    .val-orange { color: #ff9f43 !important; text-shadow: 0 0 10px rgba(255,159,67,0.2); }
-    
+    .val-white { color: #ffffff !important; }
+    .val-red { color: #f6465d !important; }
+    .val-orange { color: #ff9f43 !important; }
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
     .pcr-box { background-color: #1a1e29; border: 1px solid #2d334a; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; text-align: center; margin-bottom: 10px; color: #a0a5b5; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Unified Multi-Asset Risk-Reward Analytics Engine")
+st.title("🚨 Symmetrical Institutional Volatility Terminal")
+st.caption("Main Cockpit Dashboard Nodes | Live Multi-Market Confluence Order Flow Processing Grid")
 
 DB_FILE = "terminal_history.db"
 
@@ -48,17 +41,8 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT,
-            asset TEXT,
-            market_type TEXT,
-            expiry TEXT,
-            strike INTEGER,
-            type TEXT,
-            quadrant TEXT,
-            direction TEXT,
-            volume INTEGER,
-            ltp REAL,
-            delta REAL
+            timestamp TEXT, asset TEXT, market_type TEXT, expiry TEXT,
+            strike INTEGER, type TEXT, quadrant TEXT, direction TEXT, volume INTEGER, ltp REAL, delta REAL
         )
     """)
     conn.commit()
@@ -122,9 +106,8 @@ def calculate_bs_delta(spot, strike, option_type):
 
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
-        if random.random() > 0.05:
+        if random.random() > 0.08:
             return
-
         if symbol == "NIFTY": ticker = "^NSEI"; step = 50
         elif symbol == "BANKNIFTY": ticker = "^NSEBANK"; step = 100
         elif symbol == "CRUDEOIL": ticker = "CL=F"; step = 100
@@ -135,24 +118,13 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
             
         tick = yf.Ticker(ticker)
         raw_spot = tick.fast_info['lastPrice']
-        
         if pd.isna(raw_spot) or raw_spot == 0:
             fallback = {"NIFTY":24150, "BANKNIFTY":52400, "CRUDEOIL":6400, "NATURALGAS":260, "GOLD":72300, "SILVER":88400, "RELIANCE":2450, "HDFCBANK":1610}
             raw_spot = fallback.get(symbol, 100.0)
 
-        usd_inr_rate = 83.50
-        if market_type == "COMMODITY":
-            if symbol == "CRUDEOIL": spot = raw_spot * usd_inr_rate if raw_spot < 500 else raw_spot
-            elif symbol == "NATURALGAS": spot = raw_spot * usd_inr_rate * 2.5 if raw_spot < 20 else raw_spot
-            elif symbol == "GOLD": spot = (raw_spot / 31.1035) * 10 * usd_inr_rate if raw_spot < 5000 else raw_spot
-            elif symbol == "SILVER": spot = (raw_spot / 31.1035) * 1000 * usd_inr_rate if raw_spot < 5000 else raw_spot
-        else:
-            spot = raw_spot
-
+        spot = raw_spot
         atm = round(spot / step) * step
-        ist_tz = pytz.timezone('Asia/Kolkata')
-        now_dt = datetime.now(ist_tz)
-        ts_string = now_dt.strftime("%H:%M:%S")
+        ts_string = datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%H:%M:%S")
         
         base_premium_pool = 120.0 if symbol == "CRUDEOIL" else 15.0 if symbol == "NATURALGAS" else 650.0 if symbol == "GOLD" else 1300.0 if symbol == "SILVER" else 125.0 if market_type == "INDEX" else (spot * 0.025)
         chosen_offset = random.choice([-1, 1])
@@ -172,22 +144,10 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         ltp_c = max(1.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
         ltp_p = max(1.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
         
-        save_anomaly_to_db({
-            'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
-            'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')
-        })
-        save_anomaly_to_db({
-            'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
-            'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.95), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
-        })
+        save_anomaly_to_db({'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label, 'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')})
+        save_anomaly_to_db({'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label, 'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.95), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')})
     except:
         pass
-
-all_monitored_assets = [
-    ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
-    ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
-    ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
-]
 
 for asset, m_type in all_monitored_assets:
     parse_and_append_anomalies(asset, m_type, get_expiry_dates_for_asset(asset, m_type))
@@ -202,8 +162,8 @@ def render_cross_market_alerts(df_source):
     for _, row in breakout_nodes.iterrows():
         st.markdown(f"""
         <div style='background: rgba(46, 189, 133, 0.12); border: 1px solid #2ebd85; border-left: 6px solid #2ebd85; padding: 10px 20px; border-radius: 4px; margin-bottom: 15px;'>
-            <strong style='color: #fff; font-size:1rem;'>💥 SYSTEMIC CROSS-STRIKE BREAKOUT CONGENUITY</strong><br/>
-            <span style='font-size:0.9rem; color:#e4e6eb;'>Institutions are sweeping consecutive strike chains on <b>{row['asset']}</b> with high-velocity order sweeps!</span>
+            <strong style='color: #fff; font-size:1rem;'>💥 SYSTEMIC MULTI-STRIKE BREAKOUT ALERT (CONFLUENCE ENGINE)</strong><br/>
+            <span style='font-size:0.9rem; color:#e4e6eb;'>Institutions are sweeping consecutive option strike ranges on <b>{row['asset']}</b> simultaneously!</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -219,22 +179,19 @@ def render_instrument_block(asset_name, df_source):
     total_ce_vol = f_df[f_df['type'] == 'CE']['volume'].sum()
     total_pe_vol = f_df[f_df['type'] == 'PE']['volume'].sum()
     pcr_val = round(total_pe_vol / max(1, total_ce_vol), 2)
-    st.markdown(f"<div class='pcr-box'>Volume PCR: {pcr_val} | " + ("🟢 Bullish Oversold Floor" if pcr_val > 1.1 else "🔴 Bearish Supply Ceiling" if pcr_val < 0.8 else "🟡 Neutral Balance") + "</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='pcr-box'>Volume PCR: {pcr_val} | " + ("🟢 Bullish Oversold Floor" if pcr_val > 1.1 else "🔴 Bearish Supply Overhang" if pcr_val < 0.8 else "🟡 Neutral Balance") + "</div>", unsafe_allow_html=True)
         
     latest_block = f_df.sort_values(by='id', ascending=False).head(2)
     if len(latest_block) == 2:
         target_strike_val = int(latest_block['strike'].iloc[0])
         opt_ltp = float(latest_block['ltp'].iloc[0])
-        exp_tag = latest_block['expiry'].iloc[0]
         total_lots = int(latest_block['volume'].iloc[0])
         vwap_anchor = round(opt_ltp, 1)
         
-        # --- FIX: INJECTED FORCED CONTRAST STYLE CLASSES (`val-white`, `val-red`, `val-orange`) ---
-        if "BULLISH" in str(latest_block['direction'].iloc[0]) and "Buying" in str(latest_block['quadrant'].tolist()):
+        if "BULLISH" in str(latest_block['direction'].iloc[0]):
             st.markdown(f"""
             <div class='signal-card' style='border: 1px solid #2ebd85; background: rgba(46, 189, 133, 0.05); border-left: 5px solid #2ebd85;'>
                 <p style='color: #2ebd85; margin: 0 0 4px 0; font-size:0.85rem; font-weight:700;'>🔥 ELITE LONG SETUP: STRIKE {target_strike_val}</p>
-                <p style='margin: 0 0 10px 0; font-size:0.72rem; color:#a0a5b5;'>Symmetrical Long Accumulation Pool: <b>{total_lots:,} lots</b></p>
                 <div class='row g-1'>
                     <div class='col-4'><div class='param-box' style='border-color:#2ebd85;'><div class='param-lbl' style='color:#2ebd85;'>OB Entry</div><div class='param-val val-white'>{vwap_anchor}</div></div></div>
                     <div class='col-4'><div class='param-box'><div class='param-lbl'>Stop Loss</div><div class='param-val val-red'>{round(vwap_anchor*0.84,1)}</div></div></div>
@@ -246,7 +203,6 @@ def render_instrument_block(asset_name, df_source):
             st.markdown(f"""
             <div class='signal-card' style='border: 1px solid #f6465d; background: rgba(246, 70, 93, 0.05); border-left: 5px solid #f6465d;'>
                 <p style='color: #f6465d; margin: 0 0 4px 0; font-size:0.85rem; font-weight:700;'>🔥 ELITE SHORT SETUP: STRIKE {target_strike_val}</p>
-                <p style='margin: 0 0 10px 0; font-size:0.72rem; color:#a0a5b5;'>Symmetrical Supply Distribution Pool: <b>{total_lots:,} lots</b></p>
                 <div class='row g-1'>
                     <div class='col-4'><div class='param-box' style='border-color:#f6465d;'><div class='param-lbl' style='color:#f6465d;'>OB Entry</div><div class='param-val val-white'>{vwap_anchor}</div></div></div>
                     <div class='col-4'><div class='param-box'><div class='param-lbl'>Stop Loss</div><div class='param-val val-red'>{round(vwap_anchor*1.14,1)}</div></div></div>
@@ -257,47 +213,34 @@ def render_instrument_block(asset_name, df_source):
 
     sorted_group = f_df.sort_values(by='id', ascending=False)
     sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume']).head(3)
-    
     rows_html = ""
     for _, r in sorted_group.iterrows():
         heat_opacity = min(1.0, max(0.2, r['volume'] / 1600000.0)) if asset_name not in ["CRUDEOIL","NATURALGAS","GOLD","SILVER"] else min(1.0, max(0.2, r['volume'] / 60000.0))
         cell_bg = f"rgba(46, 189, 133, {heat_opacity*0.22})" if "BULLISH" in r['Direction Sign'] else f"rgba(246, 70, 93, {heat_opacity*0.22})"
         text_color = "#2ebd85" if "BULLISH" in r['Direction Sign'] else "#f6465d"
-        
-        # --- FIX: OPTIMIZED FRACTIONAL LAYOUT SPACE FOR NARROW COMMODITIES VIEW COLUMNS ---
         rows_html += f"""
         <tr style='background-color: {cell_bg} !important;'>
-            <td style='color:#fff; font-weight:500;'>{r['timestamp']}</td>
+            <td style='color:#fff;'>{r['timestamp']}</td>
             <td style='color:#fff; font-weight:bold;'>{r['Target Strike']}</td>
-            <td style='color:#ff9f43; font-weight:600;'>{r['type']}</td>
+            <td style='color:#ff9f43;'>{r['type']}</td>
             <td style='color: {text_color}; font-weight:bold;'>{r['Quadrant']}</td>
             <td style='font-family:monospace; color:#fff;'>{r['volume']:,}</td>
             <td style='color:#ff9f43; font-weight:bold;'>{r['ltp']:.1f}</td>
         </tr>"""
         
     if rows_html:
-        # --- FIX: HARD CODED `table-layout: fixed` AND CUSTOM COLUMN WIDTH WEIGHTS VIA HTML PERCENTAGES ---
         table_html = f"""
         <html>
         <head>
         <link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'>
         <style>
             th {{ font-size: 0.62rem !important; background-color: #1e2230 !important; color: #a0a5b5 !important; padding: 2px 1px !important; text-align: center; }}
-            td {{ font-size: 0.68rem !important; padding: 3px 1px !important; text-align: center; vertical-align: middle; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }}
+            td {{ font-size: 0.68rem !important; padding: 3px 1px !important; text-align: center; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }}
         </style>
         </head>
         <body style='background-color: #0b0c10; padding:0; margin:0;'>
         <table class='table table-dark m-0' style='table-layout: fixed; width: 100%;'>
-            <thead>
-                <tr>
-                    <th style='width: 17%;'>TIME</th>
-                    <th style='width: 16%;'>STRIKE</th>
-                    <th style='width: 10%;'>TYP</th>
-                    <th style='width: 25%;'>QUADRANT</th>
-                    <th style='width: 18%;'>VOL</th>
-                    <th style='width: 14%;'>LTP</th>
-                </tr>
-            </thead>
+            <thead><tr><th style='width: 17%;'>TIME</th><th style='width: 16%;'>STRIKE</th><th style='width: 10%;'>TYP</th><th style='width: 25%;'>QUADRANT</th><th style='width: 18%;'>VOL</th><th style='width: 14%;'>LTP</th></tr></thead>
             <tbody>{rows_html}</tbody>
         </table>
         </body>
@@ -342,6 +285,3 @@ def render_unified_dashboard_grid():
         render_instrument_block("HDFCBANK", all_df)
 
 render_unified_dashboard_grid()
-
-st.markdown("---")
-st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
