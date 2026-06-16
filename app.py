@@ -4,9 +4,10 @@ import yfinance as yf
 import pytz
 import math
 import io
-import streamlit.components.v1 as components
+import sqlite3
 from datetime import datetime, timedelta
 
+# Lock terminal configuration layouts securely
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
 st.markdown("""
@@ -23,39 +24,75 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Real-Time Multi-Asset Block Activity Monitors | Index & Stock Option Scanners")
+st.caption("Persistent SQLite Database Ledger Engine | Real-Time Block Trade Scanner")
 
-# --- MASTER LEDGER MEMORY MATRIX ---
-if 'master_ledger' not in st.session_state:
-    st.session_state.master_ledger = []
+# --- DATABASE LAYER SETUP (PERMANENT STORAGE ON DISK) ---
+DB_FILE = "terminal_history.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # Creates an explicit storage table if it doesn't exist yet
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT,
+            asset TEXT,
+            is_stock INTEGER,
+            expiry TEXT,
+            strike INTEGER,
+            type TEXT,
+            quadrant TEXT,
+            direction TEXT,
+            volume INTEGER,
+            ltp REAL,
+            delta REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def save_anomaly_to_db(item):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO ledger (timestamp, asset, is_stock, expiry, strike, type, quadrant, direction, volume, ltp, delta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        item['Timestamp'], item['Asset'], 1 if item['IsStock'] else 0, item['Expiry'],
+        item['Target Strike'], item['Type'], item['Quadrant'], item['Direction Sign'],
+        item['Volume'], item['LTP'], item['Delta']
+    ))
+    conn.commit()
+    conn.close()
+
+def load_ledger_from_db():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM ledger", conn)
+    conn.close()
+    if not df.empty:
+        # Cast integer flag back to boolean type for the UI filter pipelines
+        df['IsStock'] = df['is_stock'] == 1
+        df['Target Strike'] = df['strike']
+        df['Direction Sign'] = df['direction']
+    return df
+
+# Initialize the permanent engine tables
+init_db()
 
 def get_expiry_dates_for_asset(asset_name, is_stock=False):
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
-    
-    if is_stock:
-        target_weekday = 1  # Tuesday Expiry Rule for modern Stock Options
-    else:
-        target_weekday = 1  # Tuesday Expiry Rule for NIFTY / BANKNIFTY
-        
+    target_weekday = 1  # Tuesday Expiry Standard
     days_to_expiry = (target_weekday - today.weekday()) % 7
-    curr_wk = today + timedelta(days=days_to_expiry)
-    
-    if days_to_expiry == 0:
-        curr_wk = today
-
+    curr_wk = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
     next_wk = curr_wk + timedelta(days=7)
     
     nxt_month = today.replace(day=28) + timedelta(days=5)
     last_day = nxt_month - timedelta(days=nxt_month.day)
-    monthly_days_to_tue = (last_day.weekday() - 1) % 7
-    monthly = last_day - timedelta(days=monthly_days_to_tue)
-    
+    monthly = last_day - timedelta(days=(last_day.weekday() - 1) % 7)
     if monthly < today:
-        nxt_month_alt = last_day + timedelta(days=5)
-        last_day_alt = nxt_month_alt + timedelta(days=25)
-        monthly = last_day_alt - timedelta(days=(last_day_alt.weekday() - 1) % 7)
-
+        monthly = (last_day + timedelta(days=5)) - timedelta(days=((last_day + timedelta(days=5)).weekday() - 1) % 7)
     return {
         "current": f"Current Week ({curr_wk.strftime('%d-%b')})",
         "next": f"Next Week ({next_wk.strftime('%d-%b')})",
@@ -106,44 +143,39 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
             
         base_premium_pool = 105.0 if symbol == "NIFTY" else 350.0 if symbol == "BANKNIFTY" else (spot * 0.022)
         
-        # Scans the chain array to isolate blocks and appends them straight into the persistent master ledger
-        for i in range(-6, 6):
+        # Pull only 2 key structural strikes per tick to maintain clean, fast storage steps
+        for i in [-1, 1]:
             strike = atm + (i * step)
-            base_oi = 60000 - abs(i)*2200
+            vol_val = int(240000 + (now_dt.second * 950))
             
-            # Anomaly spike generator matching our 3.2 threshold
-            if (i == -1 or i == 1 or i == 3):
-                vol_val = int((45000 - abs(i)*500) * 4.2)
-                
-                if time_seed % 2 == 0:
-                    quad_c, quad_p = "Call Writing", "Put Writing"
-                    sign_c, sign_p = "🔴 BEARISH", "🟢 BULLISH"
-                else:
-                    quad_c, quad_p = "Call Buying", "Put Buying"
-                    sign_c, sign_p = "🟢 BULLISH", "🔴 BEARISH"
-                
-                time_decay_factor = math.sqrt(days_to_expiry / 5.0)
-                extrinsic_value = base_premium_pool * time_decay_factor * math.exp(-0.25 * abs(i)) + (time_seed * 0.08)
-                
-                ltp_c = max(0.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
-                ltp_p = max(0.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
-                
-                # Append Call Anomaly
-                st.session_state.master_ledger.append({
-                    'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
-                    'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')
-                })
-                # Append Put Anomaly
-                st.session_state.master_ledger.append({
-                    'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
-                    'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.94), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
-                })
+            if time_seed % 2 == 0:
+                quad_c, quad_p = "Call Writing", "Put Writing"
+                sign_c, sign_p = "🔴 BEARISH", "🟢 BULLISH"
+            else:
+                quad_c, quad_p = "Call Buying", "Put Buying"
+                sign_c, sign_p = "🟢 BULLISH", "🔴 BEARISH"
+            
+            time_decay_factor = math.sqrt(days_to_expiry / 5.0)
+            extrinsic_value = base_premium_pool * time_decay_factor * math.exp(-0.25 * abs(i)) + (time_seed * 0.08)
+            
+            ltp_c = max(0.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
+            ltp_p = max(0.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
+            
+            # Commit Call Row immediately into the DB file
+            save_anomaly_to_db({
+                'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
+                'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')
+            })
+            # Commit Put Row immediately into the DB file
+            save_anomaly_to_db({
+                'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
+                'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.94), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
+            })
     except:
         pass
 
-# Trigger fresh background processing onto the cumulative ledger
+# Trigger background generation tick directly into database file storage
 expiry_map = get_expiry_dates_for_asset("NIFTY", False)
-
 all_monitored_assets = [
     ("NIFTY", False), ("BANKNIFTY", False),
     ("RELIANCE", True), ("HDFCBANK", True), ("ICICIBANK", True), ("INFOSYS", True)
@@ -154,11 +186,7 @@ for asset, is_stk in all_monitored_assets:
     target_exp_label = asset_expiry_map["monthly"] if is_stk else asset_expiry_map["current"]
     parse_and_append_anomalies(asset, is_stk, target_exp_label)
 
-# Keep the cumulative ledger from growing past 1000 items
-if len(st.session_state.master_ledger) > 1000:
-    st.session_state.master_ledger = st.session_state.master_ledger[-1000:]
-
-# --- INTERFACE RENDER CORES ---
+# --- INTERFACE RENDER LAYER ---
 tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 def process_and_render_view(is_stock_view, dropdown_options):
@@ -178,46 +206,36 @@ def process_and_render_view(is_stock_view, dropdown_options):
         selected_expiry = local_expiry_map["monthly"]
         st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
-    if st.session_state.master_ledger:
-        # Load the complete chronological ledger array into a single active DataFrame
-        all_df = pd.DataFrame(st.session_state.master_ledger)
-        
-        # Apply clean user selection filters to target precise data cards
+    # Extract records directly from disk file
+    all_df = load_ledger_from_db()
+    
+    if not all_df.empty:
         asset_selection_upper = str(asset_selection).upper().strip()
         
-        filtered_df = all_df[
-            (all_df['IsStock'] == is_stock_view) & 
-            (all_df['Asset'].str.upper() == asset_selection_upper)
-        ].copy()
-        
+        filtered_df = all_df[(all_df['IsStock'] == is_stock_view) & (all_df['asset'].str.upper() == asset_selection_upper)].copy()
         if not is_stock_view and not filtered_df.empty:
-            filtered_df = filtered_df[filtered_df['Expiry'] == selected_expiry]
+            filtered_df = filtered_df[filtered_df['expiry'] == selected_expiry]
             
         if not filtered_df.empty:
             st.markdown("### 📋 Spike-Isolated Activity Logs")
-            
-            # --- FIX: TRACK UNIQUE STRIKES FROM THE CUMULATIVE DATA LEDGER ---
-            # This ensures that older strike cards don't disappear when the active ATM shifts
-            unique_strikes = sorted(filtered_df['Target Strike'].unique())
+            unique_strikes = sorted(filtered_df['Target Strike'].unique(), reverse=True)
             
             for strike_price in unique_strikes:
                 strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
                 
-                # Sort from newest timestamp at the top to oldest at the bottom
-                sorted_group = strike_group.sort_values(by='Timestamp', ascending=False)
+                # Fetch chronological sequence safely from SQLite dataset
+                sorted_group = strike_group.sort_values(by='id', ascending=False)
+                sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume'])
                 
-                # Deduplicate identical data points within the same second bracket
-                sorted_group = sorted_group.drop_duplicates(subset=['Timestamp', 'Type', 'Quadrant', 'Volume'])
+                # Render up to the 10 most recent consecutive historical rows per strike card
+                sorted_group = sorted_group.head(10)
                 
-                # Display up to the 12 most recent cumulative spikes inside this specific card layout
-                sorted_group = sorted_group.head(12)
-                
-                ce_sub = sorted_group[sorted_group['Type'] == 'CE']
-                pe_sub = sorted_group[sorted_group['Type'] == 'PE']
-                ce_buy_vol = int(ce_sub[ce_sub['Quadrant'] == "Call Buying"]['Volume'].sum())
-                ce_sell_vol = int(ce_sub[ce_sub['Quadrant'] == "Call Writing"]['Volume'].sum())
-                pe_buy_vol = int(pe_sub[pe_sub['Quadrant'] == "Put Buying"]['Volume'].sum())
-                pe_sell_vol = int(pe_sub[pe_sub['Quadrant'] == "Put Writing"]['Volume'].sum())
+                ce_sub = sorted_group[sorted_group['type'] == 'CE']
+                pe_sub = sorted_group[sorted_group['type'] == 'PE']
+                ce_buy_vol = int(ce_sub[ce_sub['quadrant'] == "Call Buying"]['volume'].sum())
+                ce_sell_vol = int(ce_sub[ce_sub['quadrant'] == "Call Writing"]['volume'].sum())
+                pe_buy_vol = int(pe_sub[pe_sub['quadrant'] == "Put Buying"]['volume'].sum())
+                pe_sell_vol = int(pe_sub[pe_sub['quadrant'] == "Put Writing"]['volume'].sum())
                 
                 net_buyer_total = ce_buy_vol + pe_buy_vol
                 net_seller_total = ce_sell_vol + pe_sell_vol
@@ -226,8 +244,8 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 ce_rows = []; pe_rows = []
                 for _, r in sorted_group.iterrows():
                     color_class = "color: #bbf7d0; background-color: #15803d;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca; background-color: #b91c1c;"
-                    row_html = f"<tr><td><b>{r['Timestamp']}</b></td><td>{r['Quadrant']}</td><td><span style='padding:3px 8px; border-radius:12px; font-weight:bold; font-size:0.75rem; {color_class}'>{r['Direction Sign']}</span></td><td>{r['Volume']:,}</td><td style='color:#ff9f43; font-weight:bold;'>{r['LTP']:,.1f}</td><td style='color:#2ebd85;'>{r['Delta']:+.2f}</td></tr>"
-                    if r['Type'] == "CE": ce_rows.append(row_html)
+                    row_html = f"<tr><td><b>{r['timestamp']}</b></td><td>{r['quadrant']}</td><td><span style='padding:3px 8px; border-radius:12px; font-weight:bold; font-size:0.75rem; {color_class}'>{r['Direction Sign']}</span></td><td>{r['volume']:,}</td><td style='color:#ff9f43; font-weight:bold;'>{r['ltp']:,.1f}</td><td style='color:#2ebd85;'>{r['delta']:+.2f}</td></tr>"
+                    if r['type'] == "CE": ce_rows.append(row_html)
                     else: pe_rows.append(row_html)
                 
                 ce_body_html = "".join(ce_rows) if ce_rows else "<tr><td colspan='6' class='text-muted py-3 text-center'>No high-volume CE blocks found</td></tr>"
@@ -269,7 +287,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 """
                 components.html(complete_card_html, height=380, scrolling=True)
         else:
-            st.info("⏳ Processing live data snapshots. Matrix cards map within 60s...")
+            st.info("⏳ Processing live option database instances. Updates map inside 60s...")
     else:
         st.info("⏳ Synchronizing tracking matrices...")
 
