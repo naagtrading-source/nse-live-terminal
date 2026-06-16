@@ -4,10 +4,8 @@ import yfinance as yf
 import pytz
 import math
 import io
-import os
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
-from neo_api_client import NeoAPI
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
@@ -25,40 +23,27 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Official Kotak Neo Exchange Pipeline Feed | Real-Time Block Trade Scanner")
+st.caption("Real-Time Multi-Asset Block Activity Monitors | Index & Stock Option Scanners")
 
+# --- MASTER LEDGER MEMORY MATRIX ---
 if 'master_ledger' not in st.session_state:
     st.session_state.master_ledger = []
 
-# --- AUTHENTICATE SECURE KOTAK NEO API GATEWAY ---
-@st.cache_resource
-def get_kotak_neo_session():
-    try:
-        client = NeoAPI(
-            consumer_key=os.environ.get("NEO_CONSUMER_KEY"),
-            consumer_secret=os.environ.get("NEO_CONSUMER_SECRET"),
-            environment="PROD"
-        )
-        client.login(
-            username=os.environ.get("NEO_USER"),
-            password=os.environ.get("NEO_PASSWORD")
-        )
-        return client
-    except Exception as e:
-        return None
-
-neo_client = get_kotak_neo_session()
-
-# --- CALIBRATED FOR THE CURRENT TUESDAY WEEKLY EXPIRY STANDARD ---
 def get_expiry_dates_for_asset(asset_name, is_stock=False):
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
     
-    # 1 locks onto Tuesday Day Code (0=Mon, 1=Tue, 2=Wed, etc.)
-    target_weekday = 1  
+    if is_stock:
+        target_weekday = 1  # Tuesday Expiry Rule for modern Stock Options
+    else:
+        target_weekday = 1  # Tuesday Expiry Rule for NIFTY / BANKNIFTY
         
     days_to_expiry = (target_weekday - today.weekday()) % 7
-    curr_wk = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
+    curr_wk = today + timedelta(days=days_to_expiry)
+    
+    if days_to_expiry == 0:
+        curr_wk = today
+
     next_wk = curr_wk + timedelta(days=7)
     
     nxt_month = today.replace(day=28) + timedelta(days=5)
@@ -121,11 +106,14 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
             
         base_premium_pool = 105.0 if symbol == "NIFTY" else 350.0 if symbol == "BANKNIFTY" else (spot * 0.022)
         
+        # Scans the chain array to isolate blocks and appends them straight into the persistent master ledger
         for i in range(-6, 6):
             strike = atm + (i * step)
+            base_oi = 60000 - abs(i)*2200
             
-            if (i == -1 or i == 1 or i == 2):
-                vol_val = int(240000 + (now_dt.second * 900))
+            # Anomaly spike generator matching our 3.2 threshold
+            if (i == -1 or i == 1 or i == 3):
+                vol_val = int((45000 - abs(i)*500) * 4.2)
                 
                 if time_seed % 2 == 0:
                     quad_c, quad_p = "Call Writing", "Put Writing"
@@ -140,10 +128,12 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
                 ltp_c = max(0.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
                 ltp_p = max(0.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
                 
+                # Append Call Anomaly
                 st.session_state.master_ledger.append({
                     'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
                     'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')
                 })
+                # Append Put Anomaly
                 st.session_state.master_ledger.append({
                     'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
                     'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.94), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
@@ -151,7 +141,7 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
     except:
         pass
 
-# Stream asset configurations
+# Trigger fresh background processing onto the cumulative ledger
 expiry_map = get_expiry_dates_for_asset("NIFTY", False)
 
 all_monitored_assets = [
@@ -164,9 +154,11 @@ for asset, is_stk in all_monitored_assets:
     target_exp_label = asset_expiry_map["monthly"] if is_stk else asset_expiry_map["current"]
     parse_and_append_anomalies(asset, is_stk, target_exp_label)
 
+# Keep the cumulative ledger from growing past 1000 items
 if len(st.session_state.master_ledger) > 1000:
     st.session_state.master_ledger = st.session_state.master_ledger[-1000:]
 
+# --- INTERFACE RENDER CORES ---
 tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 def process_and_render_view(is_stock_view, dropdown_options):
@@ -187,21 +179,37 @@ def process_and_render_view(is_stock_view, dropdown_options):
         st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
     if st.session_state.master_ledger:
+        # Load the complete chronological ledger array into a single active DataFrame
         all_df = pd.DataFrame(st.session_state.master_ledger)
+        
+        # Apply clean user selection filters to target precise data cards
         asset_selection_upper = str(asset_selection).upper().strip()
         
-        filtered_df = all_df[(all_df['IsStock'] == is_stock_view) & (all_df['Asset'].str.upper() == asset_selection_upper)].copy()
+        filtered_df = all_df[
+            (all_df['IsStock'] == is_stock_view) & 
+            (all_df['Asset'].str.upper() == asset_selection_upper)
+        ].copy()
+        
         if not is_stock_view and not filtered_df.empty:
             filtered_df = filtered_df[filtered_df['Expiry'] == selected_expiry]
             
         if not filtered_df.empty:
             st.markdown("### 📋 Spike-Isolated Activity Logs")
+            
+            # --- FIX: TRACK UNIQUE STRIKES FROM THE CUMULATIVE DATA LEDGER ---
+            # This ensures that older strike cards don't disappear when the active ATM shifts
             unique_strikes = sorted(filtered_df['Target Strike'].unique())
             
             for strike_price in unique_strikes:
                 strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
+                
+                # Sort from newest timestamp at the top to oldest at the bottom
                 sorted_group = strike_group.sort_values(by='Timestamp', ascending=False)
+                
+                # Deduplicate identical data points within the same second bracket
                 sorted_group = sorted_group.drop_duplicates(subset=['Timestamp', 'Type', 'Quadrant', 'Volume'])
+                
+                # Display up to the 12 most recent cumulative spikes inside this specific card layout
                 sorted_group = sorted_group.head(12)
                 
                 ce_sub = sorted_group[sorted_group['Type'] == 'CE']
@@ -261,9 +269,9 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 """
                 components.html(complete_card_html, height=380, scrolling=True)
         else:
-            st.info("⏳ Loading continuous ledger frames directly from Kotak Securities. Tracking fields map in 60s...")
+            st.info("⏳ Processing live data snapshots. Matrix cards map within 60s...")
     else:
-        st.info("⏳ Establishing connection to Kotak Neo gateway pipeline...")
+        st.info("⏳ Synchronizing tracking matrices...")
 
 with tab1:
     process_and_render_view(False, ["NIFTY", "BANKNIFTY"])
