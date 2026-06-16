@@ -57,6 +57,7 @@ def fetch_asset_snapshot(ticker_symbol, is_stock=False):
             base_oi = 50000 - abs(i)*2500
             minute_seed = (int(time.time()) // 60) % 60
             
+            # Simulated data updates that trigger writing activity across contracts
             vol_multiplier = 6.5 if (i == -1 or i == 1 or i == 3) else 1.0
             base_vol = (15000 if is_stock else 30000) - abs(i)*500 + (minute_seed * 700)
             
@@ -72,7 +73,6 @@ def fetch_asset_snapshot(ticker_symbol, is_stock=False):
     except:
         return None, pd.DataFrame()
 
-# --- FIX: STRICT IST TIMEZONE ANCHORING INJECTION ---
 ist_tz = pytz.timezone('Asia/Kolkata')
 ts = datetime.now(ist_tz).strftime("%H:%M:%S")
 
@@ -134,28 +134,35 @@ def process_and_render_view(is_stock_view, dropdown_options):
             filtered_df = all_df[all_df['Asset'] == asset_selection].copy()
             
             if not filtered_df.empty:
-                # --- REMOVED ST.LINE_CHART FROM THIS SECTOR TO EXTRACT THE VISUALIZATION ELEMENT ---
-                
                 st.markdown("### 📋 Spike-Isolated Activity Logs")
                 for strike_price, group in filtered_df.groupby('Target Strike'):
                     sorted_group = group.sort_values(by='Timestamp', ascending=False)
                     
-                    tot_buyer_vol = int(sorted_group[sorted_group['Quadrant'].str.contains("Buying")]['Volume'].sum())
-                    tot_seller_vol = int(sorted_group[sorted_group['Quadrant'].str.contains("Writing")]['Volume'].sum())
+                    # --- FIX: ISOLATED 4-WAY VOLUME SUMMATION LOGIC ---
+                    ce_sub = sorted_group[sorted_group['Type'] == 'CE']
+                    pe_sub = sorted_group[sorted_group['Type'] == 'PE']
                     
-                    if tot_buyer_vol > tot_seller_vol * 1.10:
+                    ce_buy_vol = int(ce_sub[ce_sub['Quadrant'] == "Call Buying"]['Volume'].sum())
+                    ce_sell_vol = int(ce_sub[ce_sub['Quadrant'] == "Call Writing"]['Volume'].sum())
+                    
+                    pe_buy_vol = int(pe_sub[pe_sub['Quadrant'] == "Put Buying"]['Volume'].sum())
+                    pe_sell_vol = int(pe_sub[pe_sub['Quadrant'] == "Put Writing"]['Volume'].sum())
+                    
+                    net_buyer_total = ce_buy_vol + pe_buy_vol
+                    net_seller_total = ce_sell_vol + pe_sell_vol
+                    
+                    if net_buyer_total > net_seller_total * 1.05:
                         net_bias = "🟢 INSTITUTIONAL ACCUMULATION (BULLISH)"
-                    elif tot_seller_vol > tot_buyer_vol * 1.10:
-                        net_bias = "🔴 AGGRESSIVE LIQUIDATION SELLING WAVE (BEARISH)"
+                    elif net_seller_total > net_buyer_total * 1.05:
+                        net_bias = "🔴 AGGRESSIVE SELLING WAVE (BEARISH)"
                     else:
-                        net_bias = "⚪ STRATEGIC STRADDLE RANGE BOUNDING (NEUTRAL)"
+                        net_bias = "⚪ STRATEGIC NEUTRAL RANGE STRADDLE"
                     
                     ce_rows = []
                     pe_rows = []
                     
                     for _, r in sorted_group.iterrows():
                         color_class = "color: #bbf7d0; background-color: #15803d;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca; background-color: #b91c1c;"
-                        
                         row_html = f"""
                             <tr>
                                 <td style="padding: 10px; border-bottom: 1px solid #2d3142; text-align: center;"><b>{r['Timestamp']}</b></td>
@@ -171,8 +178,8 @@ def process_and_render_view(is_stock_view, dropdown_options):
                         if r['Type'] == "CE": ce_rows.append(row_html)
                         else: pe_rows.append(row_html)
                     
-                    ce_body_html = "".join(ce_rows) if ce_rows else "<tr><td colspan='6' class='text-muted py-3'>No block trades detected in this series</td></tr>"
-                    pe_body_html = "".join(pe_rows) if pe_rows else "<tr><td colspan='6' class='text-muted py-3'>No block trades detected in this series</td></tr>"
+                    ce_body_html = "".join(ce_rows) if ce_rows else "<tr><td colspan='6' class='text-muted py-3 text-center'>No high-volume CE blocks found</td></tr>"
+                    pe_body_html = "".join(pe_rows) if pe_rows else "<tr><td colspan='6' class='text-muted py-3 text-center'>No high-volume PE blocks found</td></tr>"
                     
                     badge_color = "#0284c7" if not is_stock_view else "#7c3aed"
                     badge_text = "INDEX" if not is_stock_view else "STOCK"
@@ -184,15 +191,16 @@ def process_and_render_view(is_stock_view, dropdown_options):
                         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
                         <style>
                             body {{ background-color: #0b0c10; color: #e4e6eb; font-family: system-ui, -apple-system, sans-serif; padding: 0; margin: 0; }}
-                            .strike-card {{
-                                background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-                            }}
+                            .strike-card {{ background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }}
                             .badge-custom {{ background-color: {badge_color}; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; }}
-                            .summary-ribbon {{
-                                background-color: #1b1f2e; border-radius: 4px; padding: 10px 15px; margin-bottom: 15px;
-                                display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; border: 1px solid #2d334a;
+                            .summary-grid {{
+                                display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;
                             }}
-                            .stat-val {{ font-weight: bold; font-family: monospace; }}
+                            .ribbon-section {{
+                                background-color: #1b1f2e; border-radius: 4px; padding: 8px 12px; font-size: 0.82rem; border: 1px solid #2d334a; text-align: center;
+                            }}
+                            .stat-label {{ color: #a0a5b5; font-size: 0.75rem; font-weight: 500; margin-bottom: 2px; }}
+                            .stat-val {{ font-weight: bold; font-family: monospace; font-size: 0.9rem; }}
                             .panel-title-ce {{ background-color: #0c4a6e; color: #38bdf8; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                             .panel-title-pe {{ background-color: #7c2d12; color: #fb923c; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                             th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.72rem; text-align: center; padding: 10px !important; }}
@@ -202,14 +210,23 @@ def process_and_render_view(is_stock_view, dropdown_options):
                         <div class="strike-card">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                                 <h4 style="margin: 0; color: #fff; font-size: 1.1rem; font-weight: 600;">
-                                    <span class="badge-custom">{asset_selection} {badge_text}</span> Target Contract Strike Price: <span style="color: #ff9f43;">🎯 {strike_price}</span>
+                                    <span class="badge-custom">{asset_selection} {badge_text}</span> Target Strike: <span style="color: #ff9f43;">🎯 {strike_price}</span>
                                 </h4>
                             </div>
                             
-                            <div class="summary-ribbon">
-                                <div>Total Buyer Vol: <span class="stat-val" style="color: #38bdf8;">{tot_buyer_vol:,}</span></div>
-                                <div>Total Seller Vol: <span class="stat-val" style="color: #fb923c;">{tot_seller_vol:,}</span></div>
-                                <div>Strike Momentum: <span class="stat-val">{net_bias}</span></div>
+                            <div class="summary-grid">
+                                <div class="ribbon-section">
+                                    <div class="stat-label">CALL OPTIONS FLOWS (CE)</div>
+                                    <div>Buy: <span class="stat-val" style="color: #2ebd85;">{ce_buy_vol:,}</span> | Sell: <span class="stat-val" style="color: #f6465d;">{ce_sell_vol:,}</span></div>
+                                </div>
+                                <div class="ribbon-section">
+                                    <div class="stat-label">PUT OPTIONS FLOWS (PE)</div>
+                                    <div>Buy: <span class="stat-val" style="color: #2ebd85;">{pe_buy_vol:,}</span> | Sell: <span class="stat-val" style="color: #f6465d;">{pe_sell_vol:,}</span></div>
+                                </div>
+                                <div class="ribbon-section" style="display: flex; flex-direction: column; justify-content: center;">
+                                    <div class="stat-label">STRIKE SENTIMENT DIRECTION</div>
+                                    <div class="stat-val" style="color: #ff9f43; font-size: 0.8rem;">{net_bias}</div>
+                                </div>
                             </div>
 
                             <div class="row g-3">
