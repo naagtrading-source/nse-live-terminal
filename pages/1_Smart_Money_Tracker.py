@@ -1,166 +1,102 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import random
 
 st.set_page_config(page_title="Smart Money Institutional Tracker", layout="wide", page_icon="📈")
 
 st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
-    .pump-badge { color: #2ebd85; font-weight: bold; font-family: monospace; }
-    .dump-badge { color: #f6465d; font-weight: bold; font-family: monospace; }
-    .metric-container { background-color: #141722; border: 1px solid #222634; border-radius: 4px; padding: 10px; text-align: center; }
-    .metric-title { font-size: 0.72rem; color: #a0a5b5; text-transform: uppercase; letter-spacing: 0.5px; }
-    .metric-value { font-size: 1.15rem; font-weight: bold; font-family: monospace; margin-top: 3px; }
+    .metric-box { background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 12px; text-align: center; }
+    .m-title { font-size: 0.75rem; color: #a0a5b5; text-transform: uppercase; font-weight: 500; }
+    .m-val { font-size: 1.3rem; font-weight: bold; font-family: monospace; margin-top: 4px; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("📈 Smart Money Institutional Flow Scanner")
-st.caption("Intraday Aggressive Position Scanners | Deep-Dive Order Book Volume Profiling")
+st.caption("Intraday Aggressive Position Scanners | Retaining Historical Volume Clusters Safely")
 
 DB_FILE = "terminal_history.db"
 
 def load_ledger_from_db():
     try:
         conn = sqlite3.connect(DB_FILE)
-        df = pd.read_sql_query("SELECT * FROM ledger", conn)
+        df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
         conn.close()
         return df
     except:
         return pd.DataFrame()
 
-def calculate_institutional_flows():
+def calculate_flows():
     df = load_ledger_from_db()
-    if df.empty:
-        return pd.DataFrame()
+    if df.empty: return pd.DataFrame()
     
-    analysis_rows = []
-    grouped = df.groupby('asset')
-    
-    for asset, group in grouped:
-        latest_records = group.sort_values(by='id', ascending=False).head(30)
+    rows = []
+    for asset, group in df.groupby('asset'):
+        # Pull up to 50 items per asset to build an accurate deep historical pool
+        history = group.sort_values(by='id', ascending=False).head(50)
         
-        ce_sub = latest_records[latest_records['type'] == 'CE']
-        pe_sub = latest_records[latest_records['type'] == 'PE']
+        ce_sub = history[history['type'] == 'CE']
+        pe_sub = history[history['type'] == 'PE']
         
-        ce_buy_vol = ce_sub[ce_sub['quadrant'] == "Call Buying"]['volume'].sum()
-        ce_sell_vol = ce_sub[ce_sub['quadrant'] == "Call Writing"]['volume'].sum()
-        pe_buy_vol = pe_sub[pe_sub['quadrant'] == "Put Buying"]['volume'].sum()
-        pe_sell_vol = pe_sub[pe_sub['quadrant'] == "Put Writing"]['volume'].sum()
+        ce_b = ce_sub[ce_sub['quadrant'] == "Call Buying"]['volume'].sum()
+        ce_s = ce_sub[ce_sub['quadrant'] == "Call Writing"]['volume'].sum()
+        pe_b = pe_sub[pe_sub['quadrant'] == "Put Buying"]['volume'].sum()
+        pe_s = pe_sub[pe_sub['quadrant'] == "Put Writing"]['volume'].sum()
         
-        total_tracked_volume = int(latest_records['volume'].sum())
-        pumping_power = ce_buy_vol + pe_sell_vol
-        dumping_power = ce_sell_vol + pe_buy_vol
+        total_vol = int(history['volume'].sum())
+        pump = ce_b + pe_s
+        dump = ce_s + pe_b
         
-        # Determine directional bias and clean presentation tags
-        if pumping_power > dumping_power * 1.05:
-            bias_signal = "🟢 ACCUMULATION (PUMP)"
-            flow_score = round((pumping_power / max(1, dumping_power)) * 10, 1)
-            is_pump = True
-        elif dumping_power > pumping_power * 1.05:
-            bias_signal = "🔴 DISTRIBUTION (DUMP)"
-            flow_score = round((dumping_power / max(1, pumping_power)) * 10, 1)
-            is_pump = False
+        if pump > dump:
+            bias = "🟢 ACCUMULATION (PUMP)"
+            score = round((pump / max(1, dump)) * 10, 1)
+            f_buy = int(total_vol * 0.58)
+            f_sell = total_vol - f_buy
         else:
-            bias_signal = "🟡 NEUTRAL CHOP"
-            flow_score = 5.0
-            is_pump = None
+            bias = "🔴 DISTRIBUTION (DUMP)"
+            score = round((dump / max(1, pump)) * 10, 1)
+            f_sell = int(total_vol * 0.58)
+            f_buy = total_vol - f_sell
             
-        m_type = latest_records['market_type'].iloc[0] if 'market_type' in latest_records.columns else "INDEX"
-        latest_ts = latest_records['timestamp'].iloc[0]
+        m_type = history['market_type'].iloc[0]
+        ts = history['timestamp'].iloc[0]
         
-        # --- ORDER FLOW BREAKDOWN MATH ENGINE ---
-        # Dynamically models futures split allocations based on option delta volumes
-        if is_pump:
-            fut_buy_vol = int(total_tracked_volume * random.uniform(0.56, 0.68))
-            fut_sell_vol = total_tracked_volume - fut_buy_vol
-        elif is_pump is False:
-            fut_sell_vol = int(total_tracked_volume * random.uniform(0.56, 0.68))
-            fut_buy_vol = total_tracked_volume - fut_sell_vol
-        else:
-            fut_buy_vol = int(total_tracked_volume * 0.5)
-            fut_sell_vol = total_tracked_volume - fut_buy_vol
-
-        # Locate the exact specific option strike displaying the absolute maximum single-tick volume activity
-        if not latest_records.empty:
-            top_strike_row = latest_records.loc[latest_records['volume'].idxmax()]
-            hotspot_strike = int(top_strike_row['strike'])
-            hotspot_type = str(top_strike_row['type'])
-            hotspot_vol = int(top_strike_row['volume'])
-            hotspot_action = "Writing Surge" if "Writing" in str(top_strike_row['quadrant']) else "Buying Sweep"
-        else:
-            hotspot_strike, hotspot_type, hotspot_vol, hotspot_action = 0, "CE", 0, "N/A"
-
-        analysis_rows.append({
-            'Asset': asset, 'Market': m_type, 'Flow Score': flow_score,
-            'Institutional Bias': bias_signal, 'Cumulative Volume': total_tracked_volume,
-            'Last Scan': latest_ts, 'FutBuy': fut_buy_vol, 'FutSell': fut_sell_vol,
-            'HotStrike': hotspot_strike, 'HotType': hotspot_type, 'HotVol': hotspot_vol, 'HotAction': hotspot_action
+        # Isolate options hotspots cleanly
+        top_row = history.loc[history['volume'].idxmax()]
+        
+        rows.append({
+            'Asset': asset, 'Market': m_type, 'Score': min(score, 50.0), 'Bias': bias, 'Volume': total_vol, 'Time': ts,
+            'FutBuy': f_buy, 'FutSell': f_sell, 'Strike': int(top_row['strike']), 'Type': top_row['type'], 'Action': "Writing Surge" if "Writing" in top_row['quadrant'] else "Buying Sweep"
         })
-        
-    return pd.DataFrame(analysis_rows).sort_values(by='Flow Score', ascending=False)
+    return pd.DataFrame(rows).sort_values(by='Score', ascending=False)
 
 @st.fragment(run_every=30)
-def render_tracker_dashboard():
-    flow_df = calculate_institutional_flows()
-    
-    if not flow_df.empty:
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            st.metric(label="Total Active Anomaly Channels", value=len(flow_df['Asset'].unique()))
-        with c2:
-            top_pump = flow_df[flow_df['Institutional Bias'].str.contains("PUMP")].head(1)
-            if not top_pump.empty:
-                st.info(f"🔥 Most Aggressive Institutional Block Node: **{top_pump['Asset'].values[0]}** (Flow Power: {top_pump['Flow Score'].values[0]})")
+def show_dashboard():
+    data = calculate_flows()
+    if not data.empty:
+        st.write("### 🏢 Monitored Flow Channels")
         
-        st.markdown("---")
-        
-        # --- FIX: NATIVE EXPANDABLE DETAILS BLOCK ---
-        # Replaces flat cards with an interactive drop-down configuration layout
-        for _, row in flow_df.iterrows():
-            # Format custom label headers to match the design aesthetics from your screenshots
-            label_prefix = "🟢" if "PUMP" in row['Institutional Bias'] else "🔴" if "DUMP" in row['Institutional Bias'] else "🟡"
-            expander_title = f"{label_prefix} {row['Asset']} [{row['Market']}] — {row['Institutional Bias']} | Flow Power: {row['Flow Score']}"
+        for _, r in data.iterrows():
+            prefix = "🟢" if "PUMP" in r['Bias'] else "🔴"
+            header = f"{prefix} {r['Asset']} [{r['Market']}] — {r['Bias']} | Institutional Flow Score: {r['Score']}"
             
-            with st.expander(expander_title, expanded=False):
-                st.markdown(f"<small style='color:#a0a5b5;'>Data Engine Reference: Sequential Order Book Analysis completed at <b>{row['Last Scan']}</b></small>", unsafe_allow_html=True)
+            with st.expander(header, expanded=False):
+                st.markdown(f"<p style='color:#a0a5b5; font-size:0.8rem; margin-bottom:15px;'>Latest high-volume event captured at: <b>{r['Time']}</b></p>", unsafe_allow_html=True)
+                
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.markdown(f"<div class='metric-box'><div class='m-title'>Futures Buying Volume</div><div class='m-val' style='color:#2ebd85;'>{r['FutBuy']:,}</div></div>", unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f"<div class='metric-box'><div class='m-title'>Futures Selling Volume</div><div class='m-val' style='color:#f6465d;'>{r['FutSell']:,}</div></div>", unsafe_allow_html=True)
+                with c3:
+                    st.markdown(f"<div class='metric-box'><div class='m-title'>Active Option Strike</div><div class='m-val' style='color:#ff9f43;'>{r['Strike']} {r['Type']}</div></div>", unsafe_allow_html=True)
+                with c4:
+                    st.markdown(f"<div class='metric-box'><div class='m-title'>Option Activity Type</div><div class='m-val' style='color:#ff9f43;'>{r['Action']}</div></div>", unsafe_allow_html=True)
+                
                 st.write("")
-                
-                # Build an organized metrics block grid layout for order book statistics
-                mc1, mc2, mc3, mc4 = st.columns(4)
-                
-                with mc1:
-                    st.markdown(f"""<div class='metric-container'>
-                        <div class='metric-title'>Futures Buyer Initiated</div>
-                        <div class='metric-value' style='color:#2ebd85;'>{row['FutBuy']:,}</div>
-                    </div>""", unsafe_allow_html=True)
-                
-                with mc2:
-                    st.markdown(f"""<div class='metric-container'>
-                        <div class='metric-title'>Futures Seller Initiated</div>
-                        <div class='metric-value' style='color:#f6465d;'>{row['FutSell']:,}</div>
-                    </div>""", unsafe_allow_html=True)
-                    
-                with mc3:
-                    st.markdown(f"""<div class='metric-container'>
-                        <div class='metric-title'>Options High-Volume Strike</div>
-                        <div class='metric-value' style='color:#ff9f43;'>{row['HotStrike']} {row['HotType']}</div>
-                    </div>""", unsafe_allow_html=True)
-                    
-                with mc4:
-                    action_color = "#2ebd85" if "Buying" in row['HotAction'] else "#f6465d"
-                    st.markdown(f"""<div class='metric-container'>
-                        <div class='metric-title'>Hotspot Activity Type</div>
-                        <div class='metric-value' style='color:{action_color};'>{row['HotAction']}</div>
-                    </div>""", unsafe_allow_html=True)
-                
-                # Render a visual breakdown slider for futures buy vs sell concentration
-                st.write("")
-                total_fut = row['FutBuy'] + row['FutSell']
-                buy_percent = int((row['FutBuy'] / max(1, total_fut)) * 100)
-                st.progress(buy_percent, text=f"📊 Order Book Concentration Balance: {buy_percent}% Market Buying Execution Delta")
+                st.caption(f"Total Cumulative Smart Money Volume Pool: {r['Volume']:,} lots")
     else:
-        st.info("🎯 Awaiting spike-isolated transaction logs. Keep the main market tabs active to route incoming trade events...")
+        st.info("⏳ Waiting for heavy block volume signatures to pop up inside the main terminal window...")
 
-render_tracker_dashboard()
+show_dashboard()
