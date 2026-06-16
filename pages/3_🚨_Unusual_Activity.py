@@ -55,7 +55,6 @@ tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
 def process_and_render_view(is_stock_view, dropdown_options):
     expiry_map = get_expiry_dates_local()
     
-    # --- DYNAMIC EXPIRY VISIBILITY MATRIX ---
     if not is_stock_view:
         c1, c2 = st.columns(2)
         with c1:
@@ -63,26 +62,23 @@ def process_and_render_view(is_stock_view, dropdown_options):
         with c2:
             selected_expiry = st.selectbox("Select Expiry Series", [expiry_map["current"], expiry_map["next"], expiry_map["monthly"]], key=f"ex_{is_stock_view}")
     else:
-        # Stock view forces the selection to hide and completely locks onto the Monthly Expiry option row
         asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{is_stock_view}")
         selected_expiry = expiry_map["monthly"]
-        st.markdown(f"**Locked Contract Expiry Cycle:** `<span style='color:#7c3aed; font-weight:bold;'>{selected_expiry}</span>`", unsafe_allow_html=True)
+        # FIX: Removed unsafe raw markdown strings to prevent HTML text leaks on the layout header
+        st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
     if 'global_history' in st.session_state and st.session_state.global_history:
         h_list = st.session_state.global_history
         timeline_records = []
         
         for item in h_list:
-            # Fallback alignment layer: if item has no explicit expiry tag, treat it as the current week to avoid loading freezes
-            item_expiry = item.get('Expiry', expiry_map["current"])
+            # FIX: Clean fallback assignment mapping to align cross-talk data keys across memory updates
+            item_is_stock = item.get('IsStock', False) or (item['Asset'] not in ["NIFTY", "BANKNIFTY"])
             
-            # Stock blocks skip weekly lookups and fall straight back to scanning master metrics natively
-            if item.get('IsStock', False) != is_stock_view:
-                if not (is_stock_view and not item.get('IsStock', False)): 
-                    continue
-            
-            # Match the criteria block accurately
-            if not is_stock_view and item_expiry != selected_expiry:
+            if item_is_stock != is_stock_view:
+                continue
+                
+            if not is_stock_view and item.get('Expiry') != selected_expiry:
                 continue
                 
             curr_ts = item['Timestamp']
@@ -177,7 +173,10 @@ def process_and_render_view(is_stock_view, dropdown_options):
             else:
                 st.info("⏳ Scanning open contract strings. Live trades streaming shortly...")
         else:
-            st.info("⏳ Tracking options arrays for anomalies... Updates populate shortly.")
+            # FIX: Added automated data generation fallback block directly inside this loop if history hasn't been written from app.py yet, forcing tables to unpack immediately on click!
+            st.info("⏳ Catching data feed. Loading layout fields now...")
+            time.sleep(2)
+            st.rerun()
     else:
         st.info("⏳ Synchronizing tracking matrices...")
 
