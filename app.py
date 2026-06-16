@@ -12,31 +12,32 @@ st.markdown("""
     .main { background-color: #0d0f14; color: #e4e6eb; }
     div[data-testid="stMetricValue"] { color: #2ebd85 !important; font-family: monospace; font-size: 1.6rem; }
     .stTable, table { width: 100% !important; text-align: center !important; }
-    th { background-color: #1b1e29 !important; color: #a0a5b0 !important; text-align: center !important; font-size: 0.82rem; }
+    th { background-color: #1b1e29 !important; color: #a0a5b0 !important; text-transform: uppercase; font-size: 0.82rem; }
     td { text-align: center !important; font-size: 0.90rem; }
     </style>
 """, unsafe_allow_html=True)
 
-if 'global_history' not in st.session_state:
+# --- FIX: CACHE RESET MECHANISM ---
+# If global_history exists but lacks the updated 'Expiry' format keys, clear it to prevent app freezes
+if 'global_history' in st.session_state:
+    if len(st.session_state.global_history) > 0 and 'Expiry' not in st.session_state.global_history[0]:
+        st.session_state.global_history = []
+else:
     st.session_state.global_history = []
 
-# --- DYNAMIC EXPIRY MATRIX ENGINE ---
 def get_expiry_dates():
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
     
-    # Calculate current week Thursday (NSE Index Expiry baseline standard)
     days_to_thursday = (3 - today.weekday()) % 7
     curr_wk = today + timedelta(days=days_to_thursday)
     next_wk = curr_wk + timedelta(days=7)
     
-    # Calculate Monthly Expiry (Last Thursday of the month)
     nxt_month = curr_wk.replace(day=28) + timedelta(days=5)
     last_day = nxt_month - timedelta(days=nxt_month.day)
     days_to_thurs = (last_day.weekday() - 3) % 7
     monthly = last_day - timedelta(days=days_to_thurs)
     if monthly < today:
-        # Move forward if current month monthly has passed
         nxt_month_alt = last_day + timedelta(days=5)
         last_day_alt = nxt_month_alt + timedelta(days=25)
         days_to_thurs_alt = (last_day_alt.weekday() - 3) % 7
@@ -48,9 +49,15 @@ def get_expiry_dates():
         f"Monthly Expiry ({monthly.strftime('%d-%b')})": monthly.strftime('%Y-%m-%d')
     }
 
-def fetch_nse_market_feed(symbol, expiry_key):
+def fetch_nse_market_feed(symbol, expiry_key, is_stock=False):
     try:
-        ticker = "^NSEI" if symbol == "NIFTY" else "^NSEBANK"
+        if symbol == "NIFTY": ticker = "^NSEI"
+        elif symbol == "BANKNIFTY": ticker = "^NSEBANK"
+        elif symbol == "RELIANCE": ticker = "RELIANCE.NS"
+        elif symbol == "HDFCBANK": ticker = "HDFCBANK.NS"
+        elif symbol == "ICICIBANK": ticker = "ICICIBANK.NS"
+        else: ticker = "INFY.NS"
+            
         tick = yf.Ticker(ticker)
         spot = tick.fast_info['lastPrice']
         
@@ -59,36 +66,34 @@ def fetch_nse_market_feed(symbol, expiry_key):
             spot = h['Close'].iloc[-1] if not h.empty else 23950.0
             
         rows = []
-        atm = round(spot / 50) * 50 if symbol == "NIFTY" else round(spot / 100) * 100
-        step = 50 if symbol == "NIFTY" else 100
-        
-        # Adjust base premiums dynamically based on expiry length
+        step = 50 if symbol == "NIFTY" else 100 if symbol == "BANKNIFTY" else (5 if spot < 500 else 10 if spot < 1500 else 20)
+        atm = round(spot / step) * step
         expiry_multiplier = 1.0 if "Current" in expiry_key else 1.6 if "Next" in expiry_key else 2.4
         
-        for i in range(-15, 15):
+        for i in range(-10, 10):
             strike = atm + (i * step)
-            base_oi = 80000 - abs(i)*2200
+            base_oi = 60000 - abs(i)*2200
             minute_seed = (int(time.time()) // 60) % 60
-            base_vol = 40000 - abs(i)*800 + (minute_seed * 950)
             
-            c_chg = int(base_oi * (2.2 if i > 0 else 0.7) * (1 + minute_seed * 0.015))
-            p_chg = int(base_oi * (0.5 if i > 0 else 2.0) * (1 + minute_seed * 0.012))
+            # Formulating controlled volatile institutional spikes
+            vol_multiplier = 6.8 if (i == -1 or i == 1 or i == 3) else 1.0
+            base_vol = (18000 if is_stock else 35000) - abs(i)*600 + (minute_seed * 800)
             
-            # --- LTP DYNAMIC TRACKER ENGINE ---
-            # Calculates real-time intrinsic values + implied volatility extrinsic spreads
+            # Alternate directional spikes to verify buy/sell metrics dynamically
+            if minute_seed % 2 == 0:
+                c_chg, p_chg = int(base_oi * 2.2), int(base_oi * 1.8)
+            else:
+                c_chg, p_chg = int(-base_oi * 0.4), int(-base_oi * 0.3)
+            
             intrinsic_c = max(0.0, spot - strike)
             intrinsic_p = max(0.0, strike - spot)
+            time_value = max(8.0, (140 - abs(i) * 11.0) * expiry_multiplier + (minute_seed * 0.4))
             
-            time_value = max(10.0, (150 - abs(i) * 12.0) * expiry_multiplier + (minute_seed * 0.4))
-            
-            ltp_c = round(intrinsic_c + time_value, 1)
-            ltp_p = round(intrinsic_p + time_value, 1)
-            
-            rows.append({'Strike': strike, 'Type': 'Call', 'OI': max(1000, int(base_oi*4.5)), 'Chg_OI': c_chg, 'Volume': max(100, int(base_vol)), 'LTP': ltp_c})
-            rows.append({'Strike': strike, 'Type': 'Put', 'OI': max(1000, int(base_oi*4.2)), 'Chg_OI': p_chg, 'Volume': max(100, int(base_vol * 0.94)), 'LTP': ltp_p})
+            rows.append({'Strike': strike, 'Type': 'Call', 'OI': max(1000, int(base_oi*4.5)), 'Chg_OI': c_chg, 'Volume': max(100, int(base_vol * vol_multiplier)), 'LTP': round(intrinsic_c + time_value, 1)})
+            rows.append({'Strike': strike, 'Type': 'Put', 'OI': max(1000, int(base_oi*4.2)), 'Chg_OI': p_chg, 'Volume': max(100, int(base_vol * vol_multiplier * 0.95)), 'LTP': round(intrinsic_p + time_value, 1)})
         return spot, pd.DataFrame(rows)
     except:
-        return 23950.0, pd.DataFrame()
+        return 100.0, pd.DataFrame()
 
 st.title("📊 Live Institutional Flow Terminal")
 st.caption("Cloud Engine Server Master Node")
@@ -96,14 +101,21 @@ st.caption("Cloud Engine Server Master Node")
 expiries = get_expiry_dates()
 selected_expiry = st.sidebar.selectbox("🎯 Select Active Expiry Wheel", list(expiries.keys()))
 
-st.sidebar.success("Global Expiry Parameter Locked.")
-
 dash_data = []
 ist_tz = pytz.timezone('Asia/Kolkata')
 ts = datetime.now(ist_tz).strftime("%H:%M:%S")
 
-for asset in ["NIFTY", "BANKNIFTY"]:
-    spot, df = fetch_nse_market_feed(asset, selected_expiry)
+# Consolidate background fetches for index and core options simultaneously
+all_monitored_assets = [
+    ("NIFTY", False), ("BANKNIFTY", False),
+    ("RELIANCE", True), ("HDFCBANK", True), ("ICICIBANK", True), ("INFOSYS", True)
+]
+
+for asset, is_stk in all_monitored_assets:
+    # Stock options always evaluate matching the monthly expiry cycle row
+    target_exp = expiries[list(expiries.keys())[2]] if is_stk else selected_expiry
+    spot, df = fetch_nse_market_feed(asset, target_exp, is_stk)
+    
     if not df.empty:
         c_df = df[df['Type'] == 'Call']
         p_df = df[df['Type'] == 'Put']
@@ -118,14 +130,18 @@ for asset in ["NIFTY", "BANKNIFTY"]:
         sentiment = "🔴 Bearish" if diff_oi < 0 else "🟢 Bullish"
         
         st.session_state.global_history.append({
-            'Timestamp': ts, 'Asset': asset, 'Expiry': selected_expiry, 'Spot': spot, 'Calls_Chg': c_chg_sum, 'Puts_Chg': p_chg_sum,
-            'Diff': diff_oi, 'Diff_Pct': diff_pct, 'PCR': pcr, 'Vol_PCR': v_pcr, 'Sentiment': sentiment, 'Raw_Data': df.to_json()
+            'Timestamp': ts, 'Asset': asset, 'IsStock': is_stk, 'Expiry': target_exp, 'Spot': spot, 'Raw_Data': df.to_json()
         })
-        dash_data.append([asset, ts, f"{spot:,.2f}", f"{pcr:.3f}", f"{diff_oi:,}", f"{diff_pct:+.1f}%", sentiment])
+        
+        if not is_stk: # Render Index summaries to the primary executive dashboard
+            dash_data.append([asset, ts, f"{spot:,.2f}", f"{pcr:.3f}", f"{diff_oi:,}", f"{diff_pct:+.1f}%", sentiment])
 
 if dash_data:
     st.subheader(f"💡 Market Executive Overview Dashboard [{selected_expiry}]")
     st.table(pd.DataFrame(dash_data, columns=['Asset Ticker', 'Last Sync Time', 'Current Spot Price', 'Master PCR', 'Net OI Diff', 'Divergence %', 'Sentiment Bias']))
+
+if len(st.session_state.global_history) > 300:
+    st.session_state.global_history = st.session_state.global_history[-300:]
 
 time.sleep(60)
 st.rerun()
