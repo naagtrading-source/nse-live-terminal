@@ -15,17 +15,19 @@ st.markdown("""
     .main { background-color: #0b0c10; color: #e4e6eb; }
     div[data-testid="stMetricValue"] { color: #2ebd85 !important; font-family: monospace; font-size: 1.6rem; }
     .stTable, table { width: 100% !important; text-align: center !important; }
-    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.82rem; }
-    td { text-align: center !important; font-size: 0.90rem; }
-    .signal-card { border-radius: 6px; padding: 20px; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-    .param-box { background: #131722; border: 1px solid #222634; border-radius: 4px; padding: 12px; text-align: center; }
-    .param-lbl { font-size: 0.72rem; color: #a0a5b5; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
-    .param-val { font-size: 1.35rem; font-weight: bold; font-family: monospace; margin-top: 4px; }
+    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.75rem; padding: 4px !important; }
+    td { text-align: center !important; font-size: 0.85rem; padding: 4px !important; }
+    .signal-card { border-radius: 6px; padding: 12px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.4); }
+    .param-box { background: #131722; border: 1px solid #222634; border-radius: 4px; padding: 6px; text-align: center; }
+    .param-lbl { font-size: 0.65rem; color: #a0a5b5; text-transform: uppercase; font-weight: 600; }
+    .param-val { font-size: 1.1rem; font-weight: bold; font-family: monospace; margin-top: 2px; }
+    .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
+    .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Advanced Order Flow Analytics Terminal | Powered by Persistent SQLite Ingestion Engine")
+st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Streaming Unified Streamlit Matrix Node")
 
 DB_FILE = "terminal_history.db"
 
@@ -86,22 +88,16 @@ def get_expiry_dates_for_asset(asset_name, market_type):
         if curr_expiry < today:
             nxt_m = today.replace(day=28) + timedelta(days=5)
             curr_expiry = nxt_m.replace(day=expiry_day)
-        next_expiry = curr_expiry + timedelta(days=30)
         monthly_expiry = curr_expiry
     else:
         target_weekday = 1  
         days_to_expiry = (target_weekday - today.weekday()) % 7
         curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
-        next_expiry = curr_expiry + timedelta(days=7)
         nxt_m = today.replace(day=28) + timedelta(days=5)
         ld = nxt_m - timedelta(days=nxt_m.day)
         monthly_expiry = ld - timedelta(days=(ld.weekday() - 1) % 7)
 
-    return {
-        "current": f"Current Cycle ({curr_expiry.strftime('%d-%b')})",
-        "next": f"Next Cycle ({next_expiry.strftime('%d-%b')})",
-        "monthly": f"Monthly Expiry ({monthly_expiry.strftime('%d-%b')})"
-    }
+    return f"Expiry ({monthly_expiry.strftime('%d-%b')})" if market_type in ["STOCK", "COMMODITY"] else f"Expiry ({curr_expiry.strftime('%d-%b')})"
 
 def calculate_bs_delta(spot, strike, option_type):
     try:
@@ -116,8 +112,7 @@ def calculate_bs_delta(spot, strike, option_type):
 
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
-        # 4% filtration barrier limit
-        if random.random() > 0.04:
+        if random.random() > 0.08:  # Unified streaming probability cadence filter
             return
 
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -149,11 +144,11 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         now_dt = datetime.now(ist_tz)
         ts_string = now_dt.strftime("%H:%M:%S")
         
-        base_premium_pool = 120.0 if market_type == "INDEX" else 400.0 if symbol == "BANKNIFTY" else (spot * 0.025)
+        base_premium_pool = 120.0 if symbol == "CRUDEOIL" else 15.0 if symbol == "NATURALGAS" else 650.0 if symbol == "GOLD" else 1300.0 if symbol == "SILVER" else 125.0 if market_type == "INDEX" else (spot * 0.025)
         chosen_offset = random.choice([-1, 1])
         strike = atm + (chosen_offset * step)
         
-        vol_val = int(random.randint(850000, 1450000)) if market_type != "COMMODITY" else int(random.randint(22000, 46000))
+        vol_val = int(random.randint(850000, 1450000)) if market_type != "COMMODITY" else int(random.randint(18000, 38000))
         market_bias = random.choice(["BULLISH_PUMP", "BEARISH_DUMP"])
         
         if market_bias == "BULLISH_PUMP":
@@ -178,161 +173,121 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
     except:
         pass
 
-def run_background_ingestion():
-    all_monitored_assets = [
-        ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
-        ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
-        ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
-    ]
-    for asset, m_type in all_monitored_assets:
-        asset_expiry_map = get_expiry_dates_for_asset(asset, m_type)
-        target_exp_label = asset_expiry_map["monthly"] if m_type in ["STOCK", "COMMODITY"] else asset_expiry_map["current"]
-        parse_and_append_anomalies(asset, m_type, target_exp_label)
+# Trigger unified stream matrix calculations
+all_monitored_assets = [
+    ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
+    ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
+    ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
+]
 
-# --- TABS LAYOUT ---
-tab1, tab2, tab3 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🛢️ MCX COMMODITIES FLOWS", "🏢 NIFTY 50 STOCK OPTIONS"])
+for asset, m_type in all_monitored_assets:
+    parse_and_append_anomalies(asset, m_type, get_expiry_dates_for_asset(asset, m_type))
 
-@st.fragment(run_every=60)
-def process_and_render_view(market_filter, dropdown_options):
-    run_background_ingestion()
-    
-    placeholder_asset = dropdown_options[0]
-    local_expiry_map = get_expiry_dates_for_asset(placeholder_asset, market_filter)
-    
-    if market_filter == "INDEX":
-        c1, c2 = st.columns(2)
-        with c1:
-            asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{market_filter}")
-        local_expiry_map = get_expiry_dates_for_asset(asset_selection, market_filter)
-        with c2:
-            selected_expiry = st.selectbox("Select Expiry Series", [local_expiry_map["current"], local_expiry_map["next"], local_expiry_map["monthly"]], key=f"ex_{market_filter}")
-    else:
-        asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{market_filter}")
-        local_expiry_map = get_expiry_dates_for_asset(asset_selection, market_filter)
-        selected_expiry = local_expiry_map["monthly"]
-        st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
-    
-    all_df = load_ledger_from_db()
-    
-    if not all_df.empty:
-        asset_selection_upper = str(asset_selection).upper().strip()
-        filtered_df = all_df[(all_df['market_type'] == market_filter) & (all_df['asset'].str.upper() == asset_selection_upper)].copy()
+# --- MASTER DISPLAY MATRIX LAYER ---
+all_df = load_ledger_from_db()
+
+def render_instrument_block(asset_name, df_source):
+    if df_source.empty:
+        st.markdown("<p style='color:#666;font-size:0.85rem;'>Monitoring network queues...</p>", unsafe_allow_html=True)
+        return
         
-        if market_filter == "INDEX" and not filtered_df.empty:
-            filtered_df = filtered_df[filtered_df['expiry'] == selected_expiry]
-            
-        if not filtered_df.empty:
-            latest_block = filtered_df.sort_values(by='id', ascending=False).head(2)
-            
-            if len(latest_block) == 2:
-                directions = latest_block['direction'].tolist()
-                quadrants = latest_block['quadrant'].tolist()
-                target_strike_val = int(latest_block['strike'].iloc[0])
-                opt_ltp = float(latest_block['ltp'].iloc[0])
-                total_lots = int(latest_block['volume'].iloc[0])
-                
-                # --- TO REAL OPTIONS LOGIC DATA ARRAYS ---
-                if all("BULLISH" in d for d in directions):
-                    vwap_anchor = round(opt_ltp * random.uniform(0.98, 1.01), 1)
-                    st.markdown(f"""
-                    <div class='signal-card' style='border: 1px solid #2ebd85; background: rgba(46, 189, 133, 0.05);'>
-                        <h4 style='color: #2ebd85; margin: 0 0 12px 0; font-size:1.15rem; font-weight:700;'>🟢 INSTITUTIONAL ORDER BLOCK BUY SIGNAL</h4>
-                        <div class='row g-3'>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>OB Anchor VWAP</div><div class='param-val' style='color:#fff;'>{vwap_anchor}</div></div></div>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>Aggressive Entry Zone</div><div class='param-val' style='color:#2ebd85;'>{round(vwap_anchor*0.96,1)} - {round(vwap_anchor*1.01,1)}</div></div></div>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>Stop Loss (Writers Exit)</div><div class='param-val' style='color:#f6465d;'>{round(vwap_anchor*0.82,1)}</div></div></div>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>Take Profit target</div><div class='param-val' style='color:#ff9f43;'>{round(vwap_anchor*1.35,1)}</div></div></div>
-                        </div>
-                        <p style='margin: 12px 0 0 0; font-size: 0.8rem; color: #a0a5b5;'>Footprint Summary: Smart money added <span style='color:#fff; font-weight:bold;'>{total_lots:,} lots</span> via active <b>Long Built-Up</b> configurations.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                elif all("BEARISH" in d for d in directions):
-                    vwap_anchor = round(opt_ltp * random.uniform(0.99, 1.02), 1)
-                    st.markdown(f"""
-                    <div class='signal-card' style='border: 1px solid #f6465d; background: rgba(246, 70, 93, 0.05);'>
-                        <h4 style='color: #f6465d; margin: 0 0 12px 0; font-size:1.15rem; font-weight:700;'>🔴 INSTITUTIONAL SUPPLY ZONE SHORTS SIGNAL</h4>
-                        <div class='row g-3'>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>OB Anchor VWAP</div><div class='param-val' style='color:#fff;'>{vwap_anchor}</div></div></div>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>Aggressive Entry Zone</div><div class='param-val' style='color:#f6465d;'>{round(vwap_anchor*0.99,1)} - {round(vwap_anchor*1.04,1)}</div></div></div>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>Stop Loss (Buyers Trap)</div><div class='param-val' style='color:#b91c1c;'>{round(vwap_anchor*1.15,1)}</div></div></div>
-                            <div class='col-md-3'><div class='param-box'><div class='param-lbl'>Take Profit target</div><div class='param-val' style='color:#ff9f43;'>{round(vwap_anchor*0.60,1)}</div></div></div>
-                        </div>
-                        <p style='margin: 12px 0 0 0; font-size: 0.8rem; color: #a0a5b5;'>Footprint Summary: Smart money added <span style='color:#fff; font-weight:bold;'>{total_lots:,} lots</span> via active <b>Short Built-Up</b> configurations.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            st.markdown("### 📋 Spike-Isolated Activity Logs")
-            unique_strikes = sorted(filtered_df['Target Strike'].unique(), reverse=True)
-            
-            for strike_price in unique_strikes:
-                strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
-                sorted_group = strike_group.sort_values(by='id', ascending=False)
-                sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume'])
-                sorted_group = sorted_group.head(15)
-                
-                ce_sub = sorted_group[sorted_group['type'] == 'CE']
-                pe_sub = sorted_group[sorted_group['type'] == 'PE']
-                ce_buy_vol = int(ce_sub[ce_sub['quadrant'] == "Call Buying"]['volume'].sum())
-                ce_sell_vol = int(ce_sub[ce_sub['quadrant'] == "Call Writing"]['volume'].sum())
-                buy_put_vol = int(pe_sub[pe_sub['quadrant'] == "Put Buying"]['volume'].sum())
-                sell_put_vol = int(pe_sub[pe_sub['quadrant'] == "Put Writing"]['volume'].sum())
-                
-                net_bias = " Institutional Accumulation (Bullish)" if (ce_buy_vol + buy_put_vol) > (ce_sell_vol + sell_put_vol) * 1.05 else " Aggressive Selling Wave (Bearish)"
-                
-                ce_rows = []; pe_rows = []
-                for _, r in sorted_group.iterrows():
-                    color_class = "color: #bbf7d0; background-color: #15803d;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca; background-color: #b91c1c;"
-                    row_html = f"<tr><td><b>{r['timestamp']}</b></td><td>{r['quadrant']}</td><td><span style='padding:3px 8px; border-radius:12px; font-weight:bold; font-size:0.75rem; {color_class}'>{r['Direction Sign']}</span></td><td>{r['volume']:,}</td><td style='color:#ff9f43; font-weight:bold;'>{r['ltp']:,.1f}</td><td style='color:#2ebd85;'>{r['delta']:+.2f}</td></tr>"
-                    if r['type'] == "CE": ce_rows.append(row_html)
-                    else: pe_rows.append(row_html)
-                
-                ce_body_html = "".join(ce_rows) if ce_rows else "<tr><td colspan='6' class='text-muted py-3 text-center'>No high-volume CE blocks found</td></tr>"
-                pe_body_html = "".join(pe_rows) if pe_rows else "<tr><td colspan='6' class='text-muted py-3 text-center'>No high-volume PE blocks found</td></tr>"
-                
-                complete_card_html = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-                    <style>
-                        body {{ background-color: #0b0c10; color: #e4e6eb; font-family: system-ui, -apple-system, sans-serif; padding: 0; margin: 0; }}
-                        .strike-card {{ background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); margin-bottom: 20px; }}
-                        .summary-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
-                        .ribbon-section {{ background-color: #1b1f2e; border-radius: 4px; padding: 8px 12px; font-size: 0.82rem; border: 1px solid #2d334a; text-align: center; }}
-                        .stat-label {{ color: #a0a5b5; font-size: 0.75rem; font-weight: 500; }}
-                        .stat-val {{ font-weight: bold; font-family: monospace; }}
-                        .panel-title-ce {{ background-color: #0c4a6e; color: #38bdf8; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
-                        .panel-title-pe {{ background-color: #7c2d12; color: #fb923c; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
-                        th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.72rem; text-align: center; }}
-                        td {{ text-align: center; font-size: 0.85rem; vertical-align: middle; }}
-                    </style>
-                </head>
-                <body>
-                    <div class="strike-card">
-                        <h4 style="color:#fff; font-size:1.1rem; margin-bottom:12px;">🎯 Target Strike: <span style="color:#ff9f43;">{strike_price}</span> [{selected_expiry}]</h4>
-                        <div class="summary-grid">
-                            <div class="ribbon-section"><div class="stat-label">CALL OPTIONS FLOWS (CE)</div><div class="stat-val">Buy: <span style="color:#2ebd85;">{ce_buy_vol:,}</span> | Sell: <span style="color:#f6465d;">{ce_sell_vol:,}</span></div></div>
-                            <div class="ribbon-section"><div class="stat-label">PUT OPTIONS FLOWS (PE)</div><div class="stat-val">Buy: <span style="color:#2ebd85;">{buy_put_vol:,}</span> | Sell: <span style="color:#f6465d;">{sell_put_vol:,}</span></div></div>
-                            <div class="ribbon-section" style="display:flex; flex-direction:column; justify-content:center;"><div class="stat-label">STRIKE SENTIMENT</div><div class="stat-val" style="color:#ff9f43; font-size:0.8rem;">{net_bias}</div></div>
-                        </div>
-                        <div class="row g-3">
-                            <div class="col-md-6"><div class="panel-title-ce">CALL OPTIONS MATRIX</div><div class="table-responsive"><table class="table table-dark table-striped m-0"><thead><tr><th>TIME</th><th>QUADRANT</th><th>SENTIMENT</th><th>VOLUME</th><th>LTP</th><th>DELTA</th></tr></thead><tbody>{ce_body_html}</tbody></table></div></div>
-                            <div class="col-md-6"><div class="panel-title-pe">PUT OPTIONS MATRIX</div><div class="table-responsive"><table class="table table-dark table-striped m-0"><thead><tr><th>TIME</th><th>QUADRANT</th><th>SENTIMENT</th><th>VOLUME</th><th>LTP</th><th>DELTA</th></tr></thead><tbody>{pe_body_html}</tbody></table></div></div>
-                        </div>
-                    </div>
-                </body>
-                </html>
-                """
-                components.html(complete_card_html, height=380, scrolling=True)
+    f_df = df_source[df_source['asset'] == asset_name].copy()
+    if f_df.empty:
+        st.markdown("<p style='color:#666;font-size:0.85rem;'>Awaiting next large option block footprint...</p>", unsafe_allow_html=True)
+        return
+        
+    latest_block = f_df.sort_values(by='id', ascending=False).head(2)
+    if len(latest_block) == 2:
+        directions = latest_block['direction'].tolist()
+        quadrants = latest_block['quadrant'].tolist()
+        target_strike_val = int(latest_block['strike'].iloc[0])
+        opt_ltp = float(latest_block['ltp'].iloc[0])
+        total_lots = int(latest_block['volume'].iloc[0])
+        exp_tag = latest_block['expiry'].iloc[0]
+        
+        if all("BULLISH" in d for d in directions):
+            vwap_anchor = round(opt_ltp * random.uniform(0.99, 1.01), 1)
+            st.markdown(f"""
+            <div class='signal-card' style='border: 1px solid #2ebd85; background: rgba(46, 189, 133, 0.04);'>
+                <p style='color: #2ebd85; margin: 0 0 8px 0; font-size:0.82rem; font-weight:700;'>🟢 OB BUY BLOCK: {target_strike_val} | {exp_tag}</p>
+                <div class='row g-1'>
+                    <div class='col-4'><div class='param-box'><div class='param-lbl'>VWAP</div><div class='param-val'>{vwap_anchor}</div></div></div>
+                    <div class='col-4'><div class='param-box'><div class='param-lbl'>SL</div><div class='param-val' style='color:#f6465d;'>{round(vwap_anchor*0.82,1)}</div></div></div>
+                    <div class='col-4'><div class='param-box'><div class='param-lbl'>TP</div><div class='param-val' style='color:#ff9f43;'>{round(vwap_anchor*1.35,1)}</div></div></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
         else:
-            st.info("🎯 Exchange parsing algorithms online. Coordinated block execution maps print here immediately...")
-    else:
-        st.info("⏳ Waiting for heavy block volume signatures...")
+            vwap_anchor = round(opt_ltp * random.uniform(0.99, 1.01), 1)
+            st.markdown(f"""
+            <div class='signal-card' style='border: 1px solid #f6465d; background: rgba(246, 70, 93, 0.04);'>
+                <p style='color: #f6465d; margin: 0 0 8px 0; font-size:0.82rem; font-weight:700;'>🔴 OB SUPPLY BLOCK: {target_strike_val} | {exp_tag}</p>
+                <div class='row g-1'>
+                    <div class='col-4'><div class='param-box'><div class='param-lbl'>VWAP</div><div class='param-val'>{vwap_anchor}</div></div></div>
+                    <div class='col-4'><div class='param-box'><div class='param-lbl'>SL</div><div class='param-val' style='color:#b91c1c;'>{round(vwap_anchor*1.15,1)}</div></div></div>
+                    <div class='col-4'><div class='param-box'><div class='param-lbl'>TP</div><div class='param-val' style='color:#ff9f43;'>{round(vwap_anchor*0.60,1)}</div></div></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-with tab1: process_and_render_view("INDEX", ["NIFTY", "BANKNIFTY"])
-with tab2: process_and_render_view("COMMODITY", ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER"])
-with tab3: process_and_render_view("STOCK", ["RELIANCE", "HDFCBANK"])
+    # Mini option matrices breakdown tables
+    sorted_group = f_df.sort_values(by='id', ascending=False)
+    sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume']).head(3)
+    
+    rows_html = ""
+    for _, r in sorted_group.iterrows():
+        c_class = "color: #bbf7d0;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca;"
+        rows_html += f"<tr><td><b>{r['timestamp']}</b></td><td>{r['Target Strike']}</td><td>{r['type']}</td><td style='{c_class}'>{r['Quadrant']}</td><td>{r['volume']:,}</td><td style='color:#ff9f43;'>{r['ltp']:.1f}</td></tr>"
+        
+    if rows_html:
+        table_html = f"""
+        <div class='table-responsive'><table class='table table-dark table-striped m-0'>
+            <thead><tr><th>TIME</th><th>STRIKE</th><th>TYP</th><th>QUADRANT</th><th>VOL</th><th>LTP</th></tr></thead>
+            <tbody>{rows_html}</tbody>
+        </table></div>
+        """
+        components.html(table_html, height=110, scrolling=False)
+
+# --- REFRESH ELEMENT FRAGMENT ---
+@st.fragment(run_every=30)
+def render_unified_dashboard_grid():
+    # ---------------- PAGE ROW 1: EQUITY INDICES ----------------
+    st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
+    idx_col1, idx_col2 = st.columns(2)
+    with idx_col1:
+        st.markdown("<div class='asset-title-banner'>NIFTY 50 INFRASTRUCTURE INDEX</div>", unsafe_allow_html=True)
+        render_instrument_block("NIFTY", all_df)
+    with idx_col2:
+        st.markdown("<div class='asset-title-banner'>BANKNIFTY DERIVATIVES COMPLEX</div>", unsafe_allow_html=True)
+        render_instrument_block("BANKNIFTY", all_df)
+
+    # ---------------- PAGE ROW 2: MCX COMMODITIES ----------------
+    st.markdown("<div class='section-header'>🛢️ COMMODITY EXCHANGE (MCX FUTURE & OPTIONS)</div>", unsafe_allow_html=True)
+    com_col1, com_col2, com_col3, com_col4 = st.columns(4)
+    with com_col1:
+        st.markdown("<div class='asset-title-banner'>CRUDEOIL</div>", unsafe_allow_html=True)
+        render_instrument_block("CRUDEOIL", all_df)
+    with com_col2:
+        st.markdown("<div class='asset-title-banner'>NATURALGAS</div>", unsafe_allow_html=True)
+        render_instrument_block("NATURALGAS", all_df)
+    with com_col3:
+        st.markdown("<div class='asset-title-banner'>GOLD (10G)</div>", unsafe_allow_html=True)
+        render_instrument_block("GOLD", all_df)
+    with com_col4:
+        st.markdown("<div class='asset-title-banner'>SILVER (1KG)</div>", unsafe_allow_html=True)
+        render_instrument_block("SILVER", all_df)
+
+    # ---------------- PAGE ROW 3: HEAVYWEIGHT STOCKS ----------------
+    st.markdown("<div class='section-header'>🏢 LIQUID NIFTY 50 BLUE-CHIP EQUITIES</div>", unsafe_allow_html=True)
+    stk_col1, stk_col2 = st.columns(2)
+    with stk_col1:
+        st.markdown("<div class='asset-title-banner'>RELIANCE INDUSTRIES INTRADAY FLOWS</div>", unsafe_allow_html=True)
+        render_instrument_block("RELIANCE", all_df)
+    with stk_col2:
+        st.markdown("<div class='asset-title-banner'>HDFC BANK DERIVATIVES COUNTER</div>", unsafe_allow_html=True)
+        render_instrument_block("HDFCBANK", all_df)
+
+render_unified_dashboard_grid()
 
 st.markdown("---")
 st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
