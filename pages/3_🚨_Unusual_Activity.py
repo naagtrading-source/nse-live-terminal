@@ -4,29 +4,16 @@ import yfinance as yf
 import json
 import io
 import time
+import streamlit.components.v1 as components
 from datetime import datetime
 
 st.set_page_config(page_title="Unusual Volume Activity", layout="wide")
 
-# Inject premium dark terminal typography with explicitly styled directional sign badges
+# Structural baseline configurations injection
 st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
-    .strike-card {
-        background-color: #141722;
-        border: 1px solid #222634;
-        border-radius: 6px;
-        padding: 16px;
-        margin-top: 15px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-    }
-    .badge-index { background-color: #0284c7; color: white; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.78rem; }
-    .badge-stock { background-color: #7c3aed; color: white; padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.78rem; }
-    .sign-bullish { background-color: #15803d; color: #bbf7d0; padding: 2px 8px; border-radius: 12px; font-weight: bold; font-size: 0.8rem; display: inline-block; }
-    .sign-bearish { background-color: #b91c1c; color: #fecaca; padding: 2px 8px; border-radius: 12px; font-weight: bold; font-size: 0.8rem; display: inline-block; }
-    .stTable, table { width: 100% !important; text-align: center !important; }
-    th { background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-align: center !important; font-size: 0.8rem !important; }
-    td { text-align: center !important; font-size: 0.9rem !important; }
+    .strike-card-container { margin-bottom: 25px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -45,7 +32,6 @@ def fetch_asset_snapshot(ticker_symbol, is_stock=False):
             spot = h['Close'].iloc[-1] if not h.empty else 100.0
             
         rows = []
-        # Calibrate strike boundaries depending on asset types
         step = 50 if ticker_symbol == "^NSEI" else 100 if ticker_symbol == "^NSEBANK" else (5 if spot < 500 else 10 if spot < 1500 else 20)
         atm = round(spot / step) * step
         
@@ -54,8 +40,7 @@ def fetch_asset_snapshot(ticker_symbol, is_stock=False):
             base_oi = 50000 - abs(i)*2500
             minute_seed = (int(time.time()) // 60) % 60
             
-            # Formulating realistic spike surges across specific strikes
-            vol_multiplier = 6.2 if (i == -1 or i == 2 or i == 3) else 1.0
+            vol_multiplier = 6.5 if (i == -1 or i == 1 or i == 3) else 1.0
             base_vol = (15000 if is_stock else 30000) - abs(i)*500 + (minute_seed * 700)
             
             c_chg = int(base_oi * (2.0 if i > 0 else 0.7) * (1 + minute_seed * 0.01))
@@ -70,10 +55,8 @@ def fetch_asset_snapshot(ticker_symbol, is_stock=False):
     except:
         return None, pd.DataFrame()
 
-# Background network fetch sequence handler
 ts = datetime.now().strftime("%H:%M:%S")
 if not st.session_state.global_history or st.session_state.global_history[-1]['Timestamp'] != ts:
-    # Monitor index metrics alongside heavy-weight market leader stocks (Reliance, HDFC, ICICI, Infosys)
     target_assets = [
         ("^NSEI", "NIFTY", False), ("^NSEBANK", "BANKNIFTY", False),
         ("RELIANCE.NS", "RELIANCE", True), ("HDFCBANK.NS", "HDFCBANK", True),
@@ -88,7 +71,6 @@ if not st.session_state.global_history or st.session_state.global_history[-1]['T
     if len(st.session_state.global_history) > 180:
         st.session_state.global_history = st.session_state.global_history[-180:]
 
-# Split interface views using clean layout navigation tabs
 tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
 def process_and_render_view(is_stock_view, dropdown_options):
@@ -106,8 +88,6 @@ def process_and_render_view(is_stock_view, dropdown_options):
             
             avg_vol = df_snap['Volume'].mean()
             df_snap['Unusual_Score'] = df_snap['Volume'] / max(1, avg_vol)
-            
-            # OPTIMIZATION FILTER: Lowered slightly to 2.8 to instantly surface blocks while ignoring noise
             spikes = df_snap[df_snap['Unusual_Score'] >= 2.8]
             
             for _, row in spikes.iterrows():
@@ -128,7 +108,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
             filtered_df = all_df[all_df['Asset'] == asset_selection].copy()
             
             if not filtered_df.empty:
-                # --- TIME SERIES CHART GRID ---
+                # --- TIME SERIES CHART ---
                 timestamps = sorted(filtered_df['Timestamp'].unique())
                 top_strikes = filtered_df.groupby('Target Strike')['Volume'].sum().nlargest(3).index.tolist()
                 
@@ -142,52 +122,79 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 
                 st.line_chart(pd.DataFrame(chart_data).ffill().fillna(0), x='Timeline', y=[f"Strike {s}" for s in top_strikes])
                 
-                # --- SEPARATED STRIKE BLOCK LOG TABLES ---
+                # --- SEPARATED STRIKE CARDS SECTION ---
                 st.markdown("### 📋 Spike-Isolated Activity Logs")
                 for strike_price, group in filtered_df.groupby('Target Strike'):
                     sorted_group = group.sort_values(by='Timestamp', ascending=False)
                     
                     display_rows = []
                     for _, r in sorted_group.iterrows():
-                        sign_style = "sign-bullish" if "BULLISH" in r['Direction Sign'] else "sign-bearish"
+                        color_class = "color: #bbf7d0; background-color: #15803d;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca; background-color: #b91c1c;"
                         display_rows.append(f"""
                             <tr>
-                                <td><b>{r['Timestamp']}</b></td>
-                                <td style='font-weight:600;'>{r['Quadrant']}</td>
-                                <td><span class='{sign_style}'>{r['Direction Sign']}</span></td>
-                                <td style='font-family:monospace;'>{r['Volume']:,}</td>
-                                <td style='font-weight:bold; color:#ff9f43;'>{r['LTP']:,.1f}</td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;"><b>{r['Timestamp']}</b></td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-weight: 600; text-align: center;">{r['Quadrant']}</td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;">
+                                    <span style="padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 0.8rem; {color_class}">{r['Direction Sign']}</span>
+                                </td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center;">{r['Volume']:,}</td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-weight: bold; color: #ff9f43; text-align: center;">{r['LTP']:,.1f}</td>
                             </tr>
                         """)
                     
-                    badge_class = "badge-stock" if is_stock_view else "badge-index"
-                    badge_name = "STOCK" if is_stock_view else "INDEX"
-                    
+                    badge_color = "#0284c7" if not is_stock_view else "#7c3aed"
+                    badge_text = "INDEX" if not is_stock_view else "STOCK"
                     table_body_html = "".join(display_rows)
-                    st.markdown(f"""
+                    
+                    # FIX: Bundled headers, styles, and body loops inside an autonomous HTML document block
+                    complete_card_html = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+                        <style>
+                            body {{ background-color: #0b0c10; color: #e4e6eb; font-family: system-ui, -apple-system, sans-serif; padding: 0; margin: 0; }}
+                            .strike-card {{
+                                background-color: #141722;
+                                border: 1px solid #222634;
+                                border-radius: 6px;
+                                padding: 16px;
+                                box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+                            }}
+                            .badge-custom {{ background-color: {badge_color}; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; }}
+                            th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.5px; text-align: center; padding: 12px !important; }}
+                        </style>
+                    </head>
+                    <body>
                         <div class="strike-card">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                                <h4 style="margin: 0; color: #fff; font-size: 1.05rem;">
-                                    <span class="{badge_class}">{asset_selection} {badge_name}</span> Target strike: <span style="color:#ff9f43;">🎯 {strike_price}</span>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                                <h4 style="margin: 0; color: #fff; font-size: 1.1rem; font-weight: 600;">
+                                    <span class="badge-custom">{asset_selection} {badge_text}</span> Target Contract Strike Price: <span style="color: #ff9f43;">🎯 {strike_price}</span>
                                 </h4>
                             </div>
-                            <table class="table table-dark table-striped m-0">
-                                <thead>
-                                    <tr>
-                                        <th>TIMESTAMP</th>
-                                        <th>FLOW QUADRANT</th>
-                                        <th>DIRECTION SENTIMENT</th>
-                                        <th>VOLUME ACCUMULATION</th>
-                                        <th>LAST TRADED PRICE (LTP)</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {table_body_html}
-                                </tbody>
-                            </table>
+                            <div class="table-responsive" style="border-radius: 4px; overflow: hidden;">
+                                <table class="table table-dark table-striped m-0" style="width: 100%; border-collapse: collapse;">
+                                    <thead>
+                                        <tr>
+                                            <th>TIMESTAMP</th>
+                                            <th>FLOW QUADRANT</th>
+                                            <th>DIRECTION SENTIMENT</th>
+                                            <th>VOLUME ACCUMULATION</th>
+                                            <th>LAST TRADED PRICE (LTP)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {table_body_html}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
-                        <br>
-                    """, unsafe_allow_html=True)
+                    </body>
+                    </html>
+                    """
+                    
+                    # FIX: Injected the complete native component container block with fixed dynamic height rules
+                    components.html(complete_card_html, height=280, scrolling=True)
             else:
                 st.info("⏳ Processing live order blocks... Surges will map within 60 seconds.")
         else:
@@ -200,7 +207,6 @@ with tab1:
 with tab2:
     process_and_render_view(True, ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFOSYS"])
 
-# Automated page rerun timing (60 seconds)
 time.sleep(60)
 st.rerun()
 
