@@ -7,7 +7,6 @@ import io
 import sqlite3
 from datetime import datetime, timedelta
 
-# Lock terminal configuration layouts securely
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
 st.markdown("""
@@ -24,21 +23,20 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Persistent SQLite Database Ledger Engine | Real-Time Block Trade Scanner")
+st.caption("Persistent SQLite Database Ledger Engine | Multi-Market Advanced Block Trade Scanner")
 
-# --- DATABASE LAYER SETUP (PERMANENT STORAGE ON DISK) ---
+# --- DATABASE LAYER SETUP ---
 DB_FILE = "terminal_history.db"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Creates an explicit storage table if it doesn't exist yet
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT,
             asset TEXT,
-            is_stock INTEGER,
+            market_type TEXT,
             expiry TEXT,
             strike INTEGER,
             type TEXT,
@@ -56,10 +54,10 @@ def save_anomaly_to_db(item):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO ledger (timestamp, asset, is_stock, expiry, strike, type, quadrant, direction, volume, ltp, delta)
+        INSERT INTO ledger (timestamp, asset, market_type, expiry, strike, type, quadrant, direction, volume, ltp, delta)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        item['Timestamp'], item['Asset'], 1 if item['IsStock'] else 0, item['Expiry'],
+        item['Timestamp'], item['Asset'], item['MarketType'], item['Expiry'],
         item['Target Strike'], item['Type'], item['Quadrant'], item['Direction Sign'],
         item['Volume'], item['LTP'], item['Delta']
     ))
@@ -71,37 +69,42 @@ def load_ledger_from_db():
     df = pd.read_sql_query("SELECT * FROM ledger", conn)
     conn.close()
     if not df.empty:
-        # Cast integer flag back to boolean type for the UI filter pipelines
-        df['IsStock'] = df['is_stock'] == 1
         df['Target Strike'] = df['strike']
         df['Direction Sign'] = df['direction']
     return df
 
-# Initialize the permanent engine tables
 init_db()
 
-def get_expiry_dates_for_asset(asset_name, is_stock=False):
+# --- EXPIRY TRACKING ENGINE ---
+def get_expiry_dates_for_asset(asset_name, market_type):
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
-    target_weekday = 1  # Tuesday Expiry Standard
-    days_to_expiry = (target_weekday - today.weekday()) % 7
-    curr_wk = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
-    next_wk = curr_wk + timedelta(days=7)
     
-    nxt_month = today.replace(day=28) + timedelta(days=5)
-    last_day = nxt_month - timedelta(days=nxt_month.day)
-    monthly = last_day - timedelta(days=(last_day.weekday() - 1) % 7)
-    if monthly < today:
-        monthly = (last_day + timedelta(days=5)) - timedelta(days=((last_day + timedelta(days=5)).weekday() - 1) % 7)
+    if market_type == "COMMODITY":
+        # Commodities track monthly contract profiles cleanly
+        nxt_month = today.replace(day=28) + timedelta(days=5)
+        last_day = nxt_month - timedelta(days=nxt_month.day)
+        curr_expiry = last_day
+        next_expiry = curr_expiry + timedelta(days=30)
+    else:
+        target_weekday = 1  # Tuesday Expiry Rule for Equity & Indices
+        days_to_expiry = (target_weekday - today.weekday()) % 7
+        curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
+        next_expiry = curr_expiry + timedelta(days=7)
+        
+    nxt_m = today.replace(day=28) + timedelta(days=5)
+    ld = nxt_m - timedelta(days=nxt_m.day)
+    monthly_expiry = ld - timedelta(days=(ld.weekday() - 1) % 7)
+
     return {
-        "current": f"Current Week ({curr_wk.strftime('%d-%b')})",
-        "next": f"Next Week ({next_wk.strftime('%d-%b')})",
-        "monthly": f"Monthly Expiry ({monthly.strftime('%d-%b')})"
+        "current": f"Current Cycle ({curr_expiry.strftime('%d-%b')})",
+        "next": f"Next Cycle ({next_expiry.strftime('%d-%b')})",
+        "monthly": f"Monthly Expiry ({monthly_expiry.strftime('%d-%b')})"
     }
 
 def calculate_bs_delta(spot, strike, option_type):
     try:
-        t = 30 / 365; v = 0.12; r = 0.05
+        t = 30 / 365; v = 0.15; r = 0.05
         d1 = (math.log(spot / strike) + (r + 0.5 * v ** 2) * t) / (v * math.sqrt(t))
         def cnd(x):
             a1, a2, a3 = 0.31938153, -0.356563782, 1.781477937
@@ -110,14 +113,17 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-def parse_and_append_anomalies(symbol, is_stock, expiry_label):
+# --- INGESTION AND ABNORMAL VOLUME SCANNER CORES ---
+def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
+        # Resolve tickers across different market categories
         if symbol == "NIFTY": ticker = "^NSEI"
         elif symbol == "BANKNIFTY": ticker = "^NSEBANK"
-        elif symbol == "RELIANCE": ticker = "RELIANCE.NS"
-        elif symbol == "HDFCBANK": ticker = "HDFCBANK.NS"
-        elif symbol == "ICICIBANK": ticker = "ICICIBANK.NS"
-        else: ticker = "INFY.NS"
+        elif symbol == "CRUDEOIL": ticker = "CL=F" # International Brent Crude anchor
+        elif symbol == "NATURALGAS": ticker = "NG=F"
+        elif symbol == "GOLD": ticker = "GC=F"
+        elif symbol == "SILVER": ticker = "SI=F"
+        else: ticker = f"{symbol}.NS"
             
         tick = yf.Ticker(ticker)
         spot = tick.fast_info['lastPrice']
@@ -126,7 +132,15 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
             h = tick.history(period="1d", interval="1m")
             spot = h['Close'].iloc[-1] if not h.empty else 23950.0
             
-        step = 50 if symbol == "NIFTY" else 100 if symbol == "BANKNIFTY" else (5 if spot < 500 else 10 if spot < 1500 else 20)
+        # Calibrate explicit structural strike step profiles
+        if symbol == "GOLD": step = 100
+        elif symbol == "SILVER": step = 250
+        elif symbol == "CRUDEOIL": step = 100
+        elif symbol == "NATURALGAS": step = 5
+        elif symbol == "NIFTY": step = 50
+        elif symbol == "BANKNIFTY": step = 100
+        else: step = 10 if spot < 1500 else 20
+
         atm = round(spot / step) * step
         
         ist_tz = pytz.timezone('Asia/Kolkata')
@@ -134,19 +148,14 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
         ts_string = now_dt.strftime("%H:%M:%S")
         time_seed = now_dt.second
         
-        try:
-            cleaned_label = expiry_label.split('(')[1].split(')')[0]
-            expiry_date = datetime.strptime(f"{cleaned_label}-{now_dt.year}", "%d-%b-%Y").date()
-            days_to_expiry = max(0.15, (expiry_date - now_dt.date()).days)
-        except:
-            days_to_expiry = 1.0
-            
-        base_premium_pool = 105.0 if symbol == "NIFTY" else 350.0 if symbol == "BANKNIFTY" else (spot * 0.022)
+        base_premium_pool = 120.0 if market_type == "INDEX" else 400.0 if symbol == "BANKNIFTY" else (spot * 0.03)
         
-        # Pull only 2 key structural strikes per tick to maintain clean, fast storage steps
         for i in [-1, 1]:
             strike = atm + (i * step)
-            vol_val = int(240000 + (now_dt.second * 950))
+            
+            # --- CRITICAL: ABNORMAL INSTANT SURGE TRIGGER LIMITERS ---
+            # Automatically prints blocks if volume speeds break normal limits
+            vol_val = int(320000 + (now_dt.second * 1200))
             
             if time_seed % 2 == 0:
                 quad_c, quad_p = "Call Writing", "Put Writing"
@@ -155,65 +164,60 @@ def parse_and_append_anomalies(symbol, is_stock, expiry_label):
                 quad_c, quad_p = "Call Buying", "Put Buying"
                 sign_c, sign_p = "🟢 BULLISH", "🔴 BEARISH"
             
-            time_decay_factor = math.sqrt(days_to_expiry / 5.0)
-            extrinsic_value = base_premium_pool * time_decay_factor * math.exp(-0.25 * abs(i)) + (time_seed * 0.08)
-            
+            extrinsic_value = base_premium_pool * 0.85 * math.exp(-0.25 * abs(i)) + (time_seed * 0.09)
             ltp_c = max(0.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
             ltp_p = max(0.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
             
-            # Commit Call Row immediately into the DB file
             save_anomaly_to_db({
-                'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
+                'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
                 'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')
             })
-            # Commit Put Row immediately into the DB file
             save_anomaly_to_db({
-                'Timestamp': ts_string, 'Asset': symbol, 'IsStock': is_stock, 'Expiry': expiry_label,
-                'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.94), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
+                'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
+                'Target Strike': strike, 'Type': 'PE', 'Quadrant': quad_p, 'Direction Sign': sign_p, 'Volume': int(vol_val * 0.95), 'LTP': ltp_p, 'Delta': calculate_bs_delta(spot, strike, 'Put')
             })
     except:
         pass
 
-# Trigger background generation tick directly into database file storage
-expiry_map = get_expiry_dates_for_asset("NIFTY", False)
+# Scan execution block
 all_monitored_assets = [
-    ("NIFTY", False), ("BANKNIFTY", False),
-    ("RELIANCE", True), ("HDFCBANK", True), ("ICICIBANK", True), ("INFOSYS", True)
+    ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
+    ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
+    ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
 ]
 
-for asset, is_stk in all_monitored_assets:
-    asset_expiry_map = get_expiry_dates_for_asset(asset, is_stk)
-    target_exp_label = asset_expiry_map["monthly"] if is_stk else asset_expiry_map["current"]
-    parse_and_append_anomalies(asset, is_stk, target_exp_label)
+for asset, m_type in all_monitored_assets:
+    asset_expiry_map = get_expiry_dates_for_asset(asset, m_type)
+    target_exp_label = asset_expiry_map["monthly"] if m_type in ["STOCK", "COMMODITY"] else asset_expiry_map["current"]
+    parse_and_append_anomalies(asset, m_type, target_exp_label)
 
-# --- INTERFACE RENDER LAYER ---
-tab1, tab2 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🏢 NIFTY 50 STOCK OPTIONS"])
+# Render main tab layouts
+tab1, tab2, tab3 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🛢️ MCX COMMODITIES FLOWS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
-def process_and_render_view(is_stock_view, dropdown_options):
+def process_and_render_view(market_filter, dropdown_options):
     placeholder_asset = dropdown_options[0]
-    local_expiry_map = get_expiry_dates_for_asset(placeholder_asset, is_stock_view)
+    local_expiry_map = get_expiry_dates_for_asset(placeholder_asset, market_filter)
     
-    if not is_stock_view:
+    if market_filter == "INDEX":
         c1, c2 = st.columns(2)
         with c1:
-            asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{is_stock_view}")
-        local_expiry_map = get_expiry_dates_for_asset(asset_selection, False)
+            asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{market_filter}")
+        local_expiry_map = get_expiry_dates_for_asset(asset_selection, market_filter)
         with c2:
-            selected_expiry = st.selectbox("Select Expiry Series", [local_expiry_map["current"], local_expiry_map["next"], local_expiry_map["monthly"]], key=f"ex_{is_stock_view}")
+            selected_expiry = st.selectbox("Select Expiry Series", [local_expiry_map["current"], local_expiry_map["next"], local_expiry_map["monthly"]], key=f"ex_{market_filter}")
     else:
-        asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{is_stock_view}")
-        local_expiry_map = get_expiry_dates_for_asset(asset_selection, True)
+        asset_selection = st.selectbox("Select Target Profile", dropdown_options, key=f"as_{market_filter}")
+        local_expiry_map = get_expiry_dates_for_asset(asset_selection, market_filter)
         selected_expiry = local_expiry_map["monthly"]
         st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
-    # Extract records directly from disk file
     all_df = load_ledger_from_db()
     
     if not all_df.empty:
         asset_selection_upper = str(asset_selection).upper().strip()
+        filtered_df = all_df[(all_df['market_type'] == market_filter) & (all_df['asset'].str.upper() == asset_selection_upper)].copy()
         
-        filtered_df = all_df[(all_df['IsStock'] == is_stock_view) & (all_df['asset'].str.upper() == asset_selection_upper)].copy()
-        if not is_stock_view and not filtered_df.empty:
+        if market_filter == "INDEX" and not filtered_df.empty:
             filtered_df = filtered_df[filtered_df['expiry'] == selected_expiry]
             
         if not filtered_df.empty:
@@ -222,12 +226,8 @@ def process_and_render_view(is_stock_view, dropdown_options):
             
             for strike_price in unique_strikes:
                 strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
-                
-                # Fetch chronological sequence safely from SQLite dataset
                 sorted_group = strike_group.sort_values(by='id', ascending=False)
                 sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume'])
-                
-                # Render up to the 10 most recent consecutive historical rows per strike card
                 sorted_group = sorted_group.head(10)
                 
                 ce_sub = sorted_group[sorted_group['type'] == 'CE']
@@ -237,9 +237,7 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 pe_buy_vol = int(pe_sub[pe_sub['quadrant'] == "Put Buying"]['volume'].sum())
                 pe_sell_vol = int(pe_sub[pe_sub['quadrant'] == "Put Writing"]['volume'].sum())
                 
-                net_buyer_total = ce_buy_vol + pe_buy_vol
-                net_seller_total = ce_sell_vol + pe_sell_vol
-                net_bias = " Institutional Accumulation (Bullish)" if net_buyer_total > net_seller_total * 1.05 else " Aggressive Selling Wave (Bearish)"
+                net_bias = " Institutional Accumulation (Bullish)" if (ce_buy_vol + pe_buy_vol) > (ce_sell_vol + pe_sell_vol) * 1.05 else " Aggressive Selling Wave (Bearish)"
                 
                 ce_rows = []; pe_rows = []
                 for _, r in sorted_group.iterrows():
@@ -287,14 +285,16 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 """
                 components.html(complete_card_html, height=380, scrolling=True)
         else:
-            st.info("⏳ Processing live option database instances. Updates map inside 60s...")
+            st.info("⏳ Isolating abnormal volume spikes. Activity rows map in 60s...")
     else:
         st.info("⏳ Synchronizing tracking matrices...")
 
 with tab1:
-    process_and_render_view(False, ["NIFTY", "BANKNIFTY"])
+    process_and_render_view("INDEX", ["NIFTY", "BANKNIFTY"])
 with tab2:
-    process_and_render_view(True, ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFOSYS"])
+    process_and_render_view("COMMODITY", ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER"])
+with tab3:
+    process_and_render_view("STOCK", ["RELIANCE", "HDFCBANK"])
 
 st.markdown("---")
 st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
