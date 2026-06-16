@@ -5,6 +5,7 @@ import json
 import io
 import time
 import math
+import pytz
 import streamlit.components.v1 as components
 from datetime import datetime
 
@@ -23,27 +24,19 @@ st.caption("Real-Time Multi-Asset Block Activity Monitors | Index & Stock Option
 if 'global_history' not in st.session_state:
     st.session_state.global_history = []
 
-# --- BLACK-SCHOLES ENGINE FOR REAL-TIME DELTA ---
 def calculate_bs_delta(spot, strike, option_type):
     try:
-        # Standard tracking parameters: 30 days to expiry, 12% implied volatility, 5% risk-free rate
         t = 30 / 365
         v = 0.12
         r = 0.05
-        
         d1 = (math.log(spot / strike) + (r + 0.5 * v ** 2) * t) / (v * math.sqrt(t))
         
-        # Cumulative distribution approximation handler
         def cnd(x):
             a1, a2, a3, a4, a5 = 0.31938153, -0.356563782, 1.781477937, -1.821255978, 1.330274429
             m = 1.0 / (1.0 + 0.2316419 * abs(x))
-            c = 1.0 - 1.0 / math.sqrt(2 * math.pi) * math.exp(-x * x / 2.0) * (a1*m + a2*m**2 + a3*m**3 + a4*m**4 + a5*m**5)
-            return c if x >= 0 else 1.0 - c
+            return 1.0 - 1.0 / math.sqrt(2 * math.pi) * math.exp(-x * x / 2.0) * (a1*m + a2*m**2 + a3*m**3 + a4*m**4 + a5*m**5) if x >= 0 else 1.0 - (1.0 - 1.0 / math.sqrt(2 * math.pi) * math.exp(-x * x / 2.0) * (a1*m + a2*m**2 + a3*m**3 + a4*m**4 + a5*m**5))
 
-        if option_type == 'Call':
-            return round(cnd(d1), 2)
-        else:
-            return round(cnd(d1) - 1.0, 2)
+        return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except:
         return 0.50 if option_type == 'Call' else -0.50
 
@@ -79,7 +72,10 @@ def fetch_asset_snapshot(ticker_symbol, is_stock=False):
     except:
         return None, pd.DataFrame()
 
-ts = datetime.now().strftime("%H:%M:%S")
+# --- FIX: STRICT IST TIMEZONE ANCHORING INJECTION ---
+ist_tz = pytz.timezone('Asia/Kolkata')
+ts = datetime.now(ist_tz).strftime("%H:%M:%S")
+
 if not st.session_state.global_history or st.session_state.global_history[-1]['Timestamp'] != ts:
     target_assets = [
         ("^NSEI", "NIFTY", False), ("^NSEBANK", "BANKNIFTY", False),
@@ -112,14 +108,12 @@ def process_and_render_view(is_stock_view, dropdown_options):
             
             avg_vol = df_snap['Volume'].mean()
             df_snap['Unusual_Score'] = df_snap['Volume'] / max(1, avg_vol)
-            spikes = df_snap[df_snap['Unusual_Score'] >= 2.8]
+            spikes = df_snap[df_snap['Unusual_Score'] >= 3.2]
             
             for _, row in spikes.iterrows():
                 opt_type = row['Type']
                 strike_val = int(row['Strike'])
                 spot_val = float(item['Spot'])
-                
-                # Dynamic Black-Scholes Calculation Integration
                 computed_delta = calculate_bs_delta(spot_val, strike_val, opt_type)
                 
                 if opt_type == 'Call':
@@ -140,59 +134,48 @@ def process_and_render_view(is_stock_view, dropdown_options):
             filtered_df = all_df[all_df['Asset'] == asset_selection].copy()
             
             if not filtered_df.empty:
-                # --- TIME SERIES CHART ---
-                timestamps = sorted(filtered_df['Timestamp'].unique())
-                top_strikes = filtered_df.groupby('Target Strike')['Volume'].sum().nlargest(3).index.tolist()
+                # --- REMOVED ST.LINE_CHART FROM THIS SECTOR TO EXTRACT THE VISUALIZATION ELEMENT ---
                 
-                chart_data = {'Timeline': timestamps}
-                for s in top_strikes:
-                    s_series = []
-                    for t in timestamps:
-                        match = filtered_df[(filtered_df['Timestamp'] == t) & (filtered_df['Target Strike'] == s)]
-                        s_series.append(int(match['Volume'].iloc[-1]) if not match.empty else None)
-                    chart_data[f"Strike {s}"] = s_series
-                
-                st.line_chart(pd.DataFrame(chart_data).ffill().fillna(0), x='Timeline', y=[f"Strike {s}" for s in top_strikes])
-                
-                # --- SEPARATED STRIKE CARDS SECTION ---
                 st.markdown("### 📋 Spike-Isolated Activity Logs")
                 for strike_price, group in filtered_df.groupby('Target Strike'):
                     sorted_group = group.sort_values(by='Timestamp', ascending=False)
                     
-                    # Compute Summary Statistics for the Top Bar Ribbon Panel
-                    latest_tick = sorted_group.iloc[0]
-                    call_sub = sorted_group[sorted_group['Type'] == 'CE']
-                    put_sub = sorted_group[sorted_group['Type'] == 'PE']
-                    
                     tot_buyer_vol = int(sorted_group[sorted_group['Quadrant'].str.contains("Buying")]['Volume'].sum())
                     tot_seller_vol = int(sorted_group[sorted_group['Quadrant'].str.contains("Writing")]['Volume'].sum())
                     
-                    net_bias = "🟢 STRONG BULLISH ACCUMULATION" if tot_buyer_vol > tot_seller_vol * 1.05 else "🔴 AGGRESSIVE SELLING WAVE"
+                    if tot_buyer_vol > tot_seller_vol * 1.10:
+                        net_bias = "🟢 INSTITUTIONAL ACCUMULATION (BULLISH)"
+                    elif tot_seller_vol > tot_buyer_vol * 1.10:
+                        net_bias = "🔴 AGGRESSIVE LIQUIDATION SELLING WAVE (BEARISH)"
+                    else:
+                        net_bias = "⚪ STRATEGIC STRADDLE RANGE BOUNDING (NEUTRAL)"
                     
-                    display_rows = []
+                    ce_rows = []
+                    pe_rows = []
+                    
                     for _, r in sorted_group.iterrows():
                         color_class = "color: #bbf7d0; background-color: #15803d;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca; background-color: #b91c1c;"
-                        type_badge = "background-color: #0c4a6e; color: #38bdf8;" if r['Type'] == "CE" else "background-color: #7c2d12; color: #fb923c;"
                         
-                        display_rows.append(f"""
+                        row_html = f"""
                             <tr>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;"><b>{r['Timestamp']}</b></td>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;">
-                                    <span style="padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; {type_badge}">{r['Type']}</span>
+                                <td style="padding: 10px; border-bottom: 1px solid #2d3142; text-align: center;"><b>{r['Timestamp']}</b></td>
+                                <td style="padding: 10px; border-bottom: 1px solid #2d3142; font-weight: 600; text-align: center;">{r['Quadrant']}</td>
+                                <td style="padding: 10px; border-bottom: 1px solid #2d3142; text-align: center;">
+                                    <span style="padding: 3px 8px; border-radius: 12px; font-weight: bold; font-size: 0.75rem; {color_class}">{r['Direction Sign']}</span>
                                 </td>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-weight: 600; text-align: center;">{r['Quadrant']}</td>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;">
-                                    <span style="padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 0.8rem; {color_class}">{r['Direction Sign']}</span>
-                                </td>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center;">{r['Volume']:,}</td>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-weight: bold; color: #ff9f43; text-align: center;">{r['LTP']:,.1f}</td>
-                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center; font-weight: 600; color: #2ebd85;">{r['Delta']:+.2f}</td>
+                                <td style="padding: 10px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center;">{r['Volume']:,}</td>
+                                <td style="padding: 10px; border-bottom: 1px solid #2d3142; font-weight: bold; color: #ff9f43; text-align: center;">{r['LTP']:,.1f}</td>
+                                <td style="padding: 10px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center; font-weight: 600; color: #2ebd85;">{r['Delta']:+.2f}</td>
                             </tr>
-                        """)
+                        """
+                        if r['Type'] == "CE": ce_rows.append(row_html)
+                        else: pe_rows.append(row_html)
+                    
+                    ce_body_html = "".join(ce_rows) if ce_rows else "<tr><td colspan='6' class='text-muted py-3'>No block trades detected in this series</td></tr>"
+                    pe_body_html = "".join(pe_rows) if pe_rows else "<tr><td colspan='6' class='text-muted py-3'>No block trades detected in this series</td></tr>"
                     
                     badge_color = "#0284c7" if not is_stock_view else "#7c3aed"
                     badge_text = "INDEX" if not is_stock_view else "STOCK"
-                    table_body_html = "".join(display_rows)
                     
                     complete_card_html = f"""
                     <!DOCTYPE html>
@@ -202,27 +185,17 @@ def process_and_render_view(is_stock_view, dropdown_options):
                         <style>
                             body {{ background-color: #0b0c10; color: #e4e6eb; font-family: system-ui, -apple-system, sans-serif; padding: 0; margin: 0; }}
                             .strike-card {{
-                                background-color: #141722;
-                                border: 1px solid #222634;
-                                border-radius: 6px;
-                                padding: 16px;
-                                box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+                                background-color: #141722; border: 1px solid #222634; border-radius: 6px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
                             }}
                             .badge-custom {{ background-color: {badge_color}; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; }}
                             .summary-ribbon {{
-                                background-color: #1b1f2e;
-                                border-radius: 4px;
-                                padding: 10px 15px;
-                                margin-bottom: 15px;
-                                display: flex;
-                                justify-content: space-between;
-                                align-items: center;
-                                font-size: 0.85rem;
-                                border: 1px solid #2d334a;
+                                background-color: #1b1f2e; border-radius: 4px; padding: 10px 15px; margin-bottom: 15px;
+                                display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; border: 1px solid #2d334a;
                             }}
-                            .stat-box {{ text-align: center; }}
-                            .stat-val {{ font-weight: bold; color: #2ebd85; font-family: monospace; }}
-                            th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.5px; text-align: center; padding: 12px !important; }}
+                            .stat-val {{ font-weight: bold; font-family: monospace; }}
+                            .panel-title-ce {{ background-color: #0c4a6e; color: #38bdf8; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
+                            .panel-title-pe {{ background-color: #7c2d12; color: #fb923c; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
+                            th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.72rem; text-align: center; padding: 10px !important; }}
                         </style>
                     </head>
                     <body>
@@ -234,36 +207,41 @@ def process_and_render_view(is_stock_view, dropdown_options):
                             </div>
                             
                             <div class="summary-ribbon">
-                                <div class="stat-box">Total Buyer Vol: <span class="stat-val" style="color: #38bdf8;">{tot_buyer_vol:,}</span></div>
-                                <div class="stat-box">Total Seller Vol: <span class="stat-val" style="color: #fb923c;">{tot_seller_vol:,}</span></div>
-                                <div class="stat-box">Strike Trend: <span class="stat-val" style="color: #ff9f43;">{net_bias}</span></div>
+                                <div>Total Buyer Vol: <span class="stat-val" style="color: #38bdf8;">{tot_buyer_vol:,}</span></div>
+                                <div>Total Seller Vol: <span class="stat-val" style="color: #fb923c;">{tot_seller_vol:,}</span></div>
+                                <div>Strike Momentum: <span class="stat-val">{net_bias}</span></div>
                             </div>
 
-                            <div class="table-responsive" style="border-radius: 4px; overflow: hidden;">
-                                <table class="table table-dark table-striped m-0" style="width: 100%; border-collapse: collapse;">
-                                    <thead>
-                                        <tr>
-                                            <th>TIMESTAMP</th>
-                                            <th>TYPE</th>
-                                            <th>FLOW QUADRANT</th>
-                                            <th>DIRECTION SENTIMENT</th>
-                                            <th>VOLUME ACCUMULATION</th>
-                                            <th>LAST TRADED PRICE (LTP)</th>
-                                            <th>DELTA (Δ)</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {table_body_html}
-                                    </tbody>
-                                </table>
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <div class="panel-title-ce">CALL OPTIONS MATRIX (CE BLOCK ORDERS)</div>
+                                    <div class="table-responsive" style="border: 1px solid #222634; border-top: none; border-radius: 0 0 4px 4px;">
+                                        <table class="table table-dark table-striped m-0" style="width: 100%;">
+                                            <thead>
+                                                <tr><th>TIME</th><th>QUADRANT</th><th>SENTIMENT</th><th>VOLUME</th><th>LTP</th><th>DELTA</th></tr>
+                                            </thead>
+                                            <tbody>{ce_body_html}</tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                
+                                <div class="col-md-6">
+                                    <div class="panel-title-pe">PUT OPTIONS MATRIX (PE BLOCK ORDERS)</div>
+                                    <div class="table-responsive" style="border: 1px solid #222634; border-top: none; border-radius: 0 0 4px 4px;">
+                                        <table class="table table-dark table-striped m-0" style="width: 100%;">
+                                            <thead>
+                                                <tr><th>TIME</th><th>QUADRANT</th><th>SENTIMENT</th><th>VOLUME</th><th>LTP</th><th>DELTA</th></tr>
+                                            </thead>
+                                            <tbody>{pe_body_html}</tbody>
+                                        </table>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </body>
                     </html>
                     """
-                    
-                    # Render the frame with adequate height to avoid internal clipping
-                    components.html(complete_card_html, height=340, scrolling=True)
+                    components.html(complete_card_html, height=360, scrolling=True)
             else:
                 st.info("⏳ Processing live order blocks... Surges will map within 60 seconds.")
         else:
