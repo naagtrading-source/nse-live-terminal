@@ -2,7 +2,6 @@ import sqlite3
 import pandas as pd
 import yfinance as yf
 import pytz
-import math
 import random
 from datetime import datetime, timedelta
 
@@ -29,8 +28,8 @@ def save_anomaly_to_db(item):
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         item['Timestamp'], item['Asset'], item['MarketType'], item['Expiry'],
-        item['Target Strike'], item['Type'], item['Quadrant'], item['Direction Sign'],
-        item['Volume'], item['LTP'], item['Delta']
+        int(item['Target Strike']), item['Type'], item['Quadrant'], item['Direction Sign'],
+        int(item['Volume']), float(item['LTP']), float(item['Delta'])
     ))
     conn.commit()
     conn.close()
@@ -41,7 +40,7 @@ def load_ledger_from_db():
         df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
         conn.close()
         if not df.empty:
-            df['Target Strike'] = df['strike']
+            df['Target Strike'] = df['strike'].astype(int)
             df['Direction Sign'] = df['direction']
             df['Quadrant'] = df['quadrant']
         return df
@@ -67,15 +66,6 @@ def get_expiry_dates_for_asset(asset_name, market_type):
         monthly_expiry = ld - timedelta(days=(ld.weekday() - 1) % 7)
     return f"Expiry ({monthly_expiry.strftime('%d-%b')})" if market_type in ["STOCK", "COMMODITY"] else f"Expiry ({curr_expiry.strftime('%d-%b')})"
 
-def calculate_bs_delta(spot, strike, option_type):
-    try:
-        t = 30 / 365; v = 0.15; r = 0.05
-        d1 = (math.log(spot / strike) + (r + 0.5 * v ** 2) * t) / (v * math.sqrt(t))
-        def cnd(x):
-            return 0.5
-        return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
-    except: return 0.50
-
 def run_automated_generation_cycle():
     all_assets = [
         ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
@@ -83,9 +73,9 @@ def run_automated_generation_cycle():
         ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
     ]
     
-    # Run data simulation continuously to ensure all pages stay populated
     for symbol, market_type in all_assets:
         try:
+            if random.random() > 0.15: continue
             expiry_label = get_expiry_dates_for_asset(symbol, market_type)
             fallback = {"NIFTY":24150, "BANKNIFTY":52400, "CRUDEOIL":6400, "NATURALGAS":260, "GOLD":72300, "SILVER":88400, "RELIANCE":2450, "HDFCBANK":1610}
             spot = fallback.get(symbol, 100.0)
@@ -94,7 +84,7 @@ def run_automated_generation_cycle():
             atm = round(spot / step) * step
             ts_string = datetime.now(pytz.timezone('Asia/Kolkata')).strftime("%H:%M:%S")
             chosen_offset = random.choice([-1, 1])
-            strike = atm + (chosen_offset * step)
+            strike = int(atm + (chosen_offset * step))
             
             vol_val = int(random.randint(1100000, 1850000)) if market_type != "COMMODITY" else int(random.randint(35000, 68000))
             market_bias = random.choice(["EXCELLENT_LONG_SETUP", "EXCELLENT_SHORT_SETUP"])
