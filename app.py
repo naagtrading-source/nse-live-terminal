@@ -14,16 +14,21 @@ st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
     div[data-testid="stMetricValue"] { color: #2ebd85 !important; font-family: monospace; font-size: 1.6rem; }
-    .stTable, table { width: 100% !important; table-layout: fixed !important; text-align: center !important; }
+    
+    .stTable, table { width: 100% !important; table-layout: fixed !important; text-align: center !important; margin: 0 auto; }
     th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.62rem !important; font-weight: bold !important; padding: 3px 1px !important; }
     td { text-align: center !important; font-size: 0.68rem !important; padding: 4px 1px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+    
     .signal-card { border-radius: 6px; padding: 12px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); }
     .param-box { background: #131722; border: 1px solid #222634; border-radius: 4px; padding: 6px; text-align: center; }
     .param-lbl { font-size: 0.65rem; color: #a0a5b5; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
+    
     .param-val { font-size: 1.15rem; font-weight: 900 !important; font-family: monospace; margin-top: 2px; }
     .val-white { color: #ffffff !important; }
     .val-red { color: #f6465d !important; }
+    .val-green { color: #2ebd85 !important; }
     .val-orange { color: #ff9f43 !important; }
+    
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
     .pcr-box { background-color: #1a1e29; border: 1px solid #2d334a; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; text-align: center; margin-bottom: 10px; color: #a0a5b5; }
@@ -31,9 +36,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Main Cockpit Dashboard Nodes | Live Multi-Market Confluence Order Flow Processing Grid")
+st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Unified Multi-Asset Risk-Reward Analytics Engine")
 
 DB_FILE = "terminal_history.db"
+
+# --- FIX: DEFINE THE CORE TICKER STRUCTURE EXPLICITLY BEFORE EXECUTION ---
+all_monitored_assets = [
+    ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
+    ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
+    ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
+]
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -108,6 +120,7 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
         if random.random() > 0.08:
             return
+
         if symbol == "NIFTY": ticker = "^NSEI"; step = 50
         elif symbol == "BANKNIFTY": ticker = "^NSEBANK"; step = 100
         elif symbol == "CRUDEOIL": ticker = "CL=F"; step = 100
@@ -118,6 +131,7 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
             
         tick = yf.Ticker(ticker)
         raw_spot = tick.fast_info['lastPrice']
+        
         if pd.isna(raw_spot) or raw_spot == 0:
             fallback = {"NIFTY":24150, "BANKNIFTY":52400, "CRUDEOIL":6400, "NATURALGAS":260, "GOLD":72300, "SILVER":88400, "RELIANCE":2450, "HDFCBANK":1610}
             raw_spot = fallback.get(symbol, 100.0)
@@ -285,3 +299,6 @@ def render_unified_dashboard_grid():
         render_instrument_block("HDFCBANK", all_df)
 
 render_unified_dashboard_grid()
+
+st.markdown("---")
+st.markdown("<p style='text-align: center; color: #666; font-size: 0.85rem;'>This site is developed by SNY</p>", unsafe_allow_html=True)
