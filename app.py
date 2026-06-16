@@ -10,10 +10,8 @@ from datetime import datetime, timedelta
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
+# --- FIX: REMOVED THE AGGRESSIVE BROWSER META-REFRESH TAG ---
 st.markdown("""
-    <head>
-        <meta http-equiv="refresh" content="60">
-    </head>
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
     div[data-testid="stMetricValue"] { color: #2ebd85 !important; font-family: monospace; font-size: 1.6rem; }
@@ -24,7 +22,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Persistent SQLite Database Ledger Engine | Multi-Market Advanced Block Trade Scanner")
+st.caption("Persistent SQLite Database Ledger Engine | Tab-Safe Background Refresh Node")
 
 # --- DATABASE LAYER SETUP ---
 DB_FILE = "terminal_history.db"
@@ -76,27 +74,24 @@ def load_ledger_from_db():
 
 init_db()
 
-# --- FIX: ACCURATE MCX SPECIFIC COMMODITY EXPIRY CYCLES ---
 def get_expiry_dates_for_asset(asset_name, market_type):
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
     
     if market_type == "COMMODITY":
-        # MCX Crude/NatGas typically expire around the 15th-20th of the month. Gold/Silver near the beginning.
         if asset_name in ["CRUDEOIL", "NATURALGAS"]:
             expiry_day = 19
-        else: # GOLD / SILVER
+        else: 
             expiry_day = 5
             
         curr_expiry = today.replace(day=expiry_day)
         if curr_expiry < today:
-            # If current month's day passed, cycle shifts to next calendar month
             nxt_m = today.replace(day=28) + timedelta(days=5)
             curr_expiry = nxt_m.replace(day=expiry_day)
         next_expiry = curr_expiry + timedelta(days=30)
         monthly_expiry = curr_expiry
     else:
-        target_weekday = 1  # Tuesday Expiry Rule for Equity / Indices
+        target_weekday = 1  
         days_to_expiry = (target_weekday - today.weekday()) % 7
         curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
         next_expiry = curr_expiry + timedelta(days=7)
@@ -122,7 +117,6 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-# --- INGESTION AND SCANNER CORES ---
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -140,20 +134,19 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
             h = tick.history(period="1d", interval="1m")
             raw_spot = h['Close'].iloc[-1] if not h.empty else 100.0
 
-        # --- FIX: CURRENCY SCALING MULTIPLIERS FOR MCX TARGETS ---
         usd_inr_rate = 83.50
         if market_type == "COMMODITY":
             if symbol == "CRUDEOIL":
-                spot = raw_spot * usd_inr_rate  # Convert USD bbl to INR equivalent (~₹6,200)
+                spot = raw_spot * usd_inr_rate  
                 step = 100
             elif symbol == "NATURALGAS":
-                spot = raw_spot * usd_inr_rate * 2.5 # Scale to standard MCX mmBtu pricing metrics (~₹220)
+                spot = raw_spot * usd_inr_rate * 2.5 
                 step = 5
             elif symbol == "GOLD":
-                spot = (raw_spot / 31.1035) * 10 * usd_inr_rate # Convert USD/Ounce to INR per 10 Grams (~₹72,500)
+                spot = (raw_spot / 31.1035) * 10 * usd_inr_rate 
                 step = 100
             elif symbol == "SILVER":
-                spot = (raw_spot / 31.1035) * 1000 * usd_inr_rate # Convert USD/Ounce to INR per 1 KG (~₹88,000)
+                spot = (raw_spot / 31.1035) * 1000 * usd_inr_rate 
                 step = 250
         else:
             spot = raw_spot
@@ -168,7 +161,6 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         ts_string = now_dt.strftime("%H:%M:%S")
         time_seed = now_dt.second
         
-        # Adjust premium bases dynamically relative to commodity pricing weights
         base_premium_pool = 130.0 if symbol == "CRUDEOIL" else 12.0 if symbol == "NATURALGAS" else 650.0 if symbol == "GOLD" else 1200.0 if symbol == "SILVER" else 120.0 if market_type == "INDEX" else (spot * 0.025)
         
         for i in range(-3, 4):
@@ -197,21 +189,28 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
     except:
         pass
 
-all_monitored_assets = [
-    ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
-    ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
-    ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
-]
+def run_background_ingestion():
+    all_monitored_assets = [
+        ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
+        ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
+        ("RELIANCE", "STOCK"), ("HDFCBANK", "STOCK")
+    ]
+    for asset, m_type in all_monitored_assets:
+        asset_expiry_map = get_expiry_dates_for_asset(asset, m_type)
+        target_exp_label = asset_expiry_map["monthly"] if m_type in ["STOCK", "COMMODITY"] else asset_expiry_map["current"]
+        parse_and_append_anomalies(asset, m_type, target_exp_label)
 
-for asset, m_type in all_monitored_assets:
-    asset_expiry_map = get_expiry_dates_for_asset(asset, m_type)
-    target_exp_label = asset_expiry_map["monthly"] if m_type in ["STOCK", "COMMODITY"] else asset_expiry_map["current"]
-    parse_and_append_anomalies(asset, m_type, target_exp_label)
-
-# --- INTERFACE RENDER LAYER ---
+# --- MASTER NAVIGATION LAYER ---
+# Tabs now stay strictly stable because the main page wrapper never hard-reloads
 tab1, tab2, tab3 = st.tabs(["⚡ NIFTY INDEX OPTIONS", "🛢️ MCX COMMODITIES FLOWS", "🏢 NIFTY 50 STOCK OPTIONS"])
 
+# --- FIX: NATIVE BACKGROUND TIMED DATA FRAGMENT WRAPPER ---
+# This updates tables inside the active view container automatically every 60 seconds
+@st.fragment(run_every=60)
 def process_and_render_view(market_filter, dropdown_options):
+    # Execute data sweep right inside the fragment container context seamlessly
+    run_background_ingestion()
+    
     placeholder_asset = dropdown_options[0]
     local_expiry_map = get_expiry_dates_for_asset(placeholder_asset, market_filter)
     
@@ -306,6 +305,7 @@ def process_and_render_view(market_filter, dropdown_options):
     else:
         st.info("⏳ Synchronizing tracking matrices...")
 
+# Render each independent fragment block cleanly within its corresponding tab scope
 with tab1:
     process_and_render_view("INDEX", ["NIFTY", "BANKNIFTY"])
 with tab2:
