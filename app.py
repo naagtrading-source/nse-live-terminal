@@ -15,19 +15,20 @@ st.markdown("""
     .main { background-color: #0b0c10; color: #e4e6eb; }
     div[data-testid="stMetricValue"] { color: #2ebd85 !important; font-family: monospace; font-size: 1.6rem; }
     .stTable, table { width: 100% !important; text-align: center !important; }
-    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.75rem; padding: 4px !important; }
-    td { text-align: center !important; font-size: 0.85rem; padding: 4px !important; }
+    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.72rem; padding: 4px !important; }
+    td { text-align: center !important; font-size: 0.82rem; padding: 4px !important; }
     .signal-card { border-radius: 6px; padding: 12px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.4); }
     .param-box { background: #131722; border: 1px solid #222634; border-radius: 4px; padding: 6px; text-align: center; }
     .param-lbl { font-size: 0.65rem; color: #a0a5b5; text-transform: uppercase; font-weight: 600; }
     .param-val { font-size: 1.1rem; font-weight: bold; font-family: monospace; margin-top: 2px; }
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
+    .pcr-box { background-color: #1a1e29; border: 1px solid #2d334a; padding: 4px 10px; border-radius: 4px; font-size: 0.8rem; text-align: center; margin-bottom: 10px; color: #a0a5b5; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Anomalies")
-st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Streaming Unified Streamlit Matrix Node")
+st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Unified Multi-Asset Risk-Reward Analytics Engine")
 
 DB_FILE = "terminal_history.db"
 
@@ -74,6 +75,8 @@ def load_ledger_from_db():
     if not df.empty:
         df['Target Strike'] = df['strike']
         df['Direction Sign'] = df['direction']
+        # FIX: Explicitly enforce uniform case normalization mapping across database references
+        df['Quadrant'] = df['quadrant']
     return df
 
 init_db()
@@ -112,7 +115,7 @@ def calculate_bs_delta(spot, strike, option_type):
 
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
-        if random.random() > 0.08:  # Unified streaming probability cadence filter
+        if random.random() > 0.06:  # Stabilized ingest frequency baseline
             return
 
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -148,7 +151,7 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         chosen_offset = random.choice([-1, 1])
         strike = atm + (chosen_offset * step)
         
-        vol_val = int(random.randint(850000, 1450000)) if market_type != "COMMODITY" else int(random.randint(18000, 38000))
+        vol_val = int(random.randint(850000, 1450000)) if market_type != "COMMODITY" else int(random.randint(22000, 46000))
         market_bias = random.choice(["BULLISH_PUMP", "BEARISH_DUMP"])
         
         if market_bias == "BULLISH_PUMP":
@@ -173,7 +176,6 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
     except:
         pass
 
-# Trigger unified stream matrix calculations
 all_monitored_assets = [
     ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
     ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY"),
@@ -183,30 +185,54 @@ all_monitored_assets = [
 for asset, m_type in all_monitored_assets:
     parse_and_append_anomalies(asset, m_type, get_expiry_dates_for_asset(asset, m_type))
 
-# --- MASTER DISPLAY MATRIX LAYER ---
 all_df = load_ledger_from_db()
+
+# --- PRE-COMPUTE FEATURE 1: MULTI-STRIKE SYSTEMIC ALERTS CORRELATION ---
+def render_cross_market_alerts(df_source):
+    if df_source.empty: return
+    recent_window = df_source.head(16)
+    match_counts = recent_window.groupby(['asset', 'direction']).size().reset_index(name='counts')
+    breakout_nodes = match_counts[match_counts['counts'] >= 4]
+    
+    for _, row in breakout_nodes.iterrows():
+        b_asset = row['asset']
+        b_dir = row['direction']
+        alert_bg = "rgba(46, 189, 133, 0.12)" if "BULLISH" in b_dir else "rgba(246, 70, 93, 0.12)"
+        alert_border = "#2ebd85" if "BULLISH" in b_dir else "#f6465d"
+        st.markdown(f"""
+        <div style='background: {alert_bg}; border: 1px solid {alert_border}; border-left: 6px solid {alert_border}; padding: 10px 20px; border-radius: 4px; margin-bottom: 15px;'>
+            <strong style='color: #fff; font-size:1rem;'>💥 SYSTEMIC CROSS-STRIKE BREAKOUT CONGENUITY DETECTED</strong><br/>
+            <span style='font-size:0.9rem; color:#e4e6eb;'>Institutions are slamming consecutive strike layers on <b>{b_asset}</b> with high-velocity <b>{b_dir}</b> block execution orders!</span>
+        </div>
+        """, unsafe_allow_html=True)
 
 def render_instrument_block(asset_name, df_source):
     if df_source.empty:
-        st.markdown("<p style='color:#666;font-size:0.85rem;'>Monitoring network queues...</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#666;font-size:0.85rem;'>Monitoring channels...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'] == asset_name].copy()
     if f_df.empty:
-        st.markdown("<p style='color:#666;font-size:0.85rem;'>Awaiting next large option block footprint...</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#666;font-size:0.85rem;'>Awaiting anomaly track footprints...</p>", unsafe_allow_html=True)
         return
+        
+    # --- ANCHOR FEATURE 3: INTRADAY PUT-CALL RATIO (PCR) LOGIC GAUGE ---
+    total_ce_vol = f_df[f_df['type'] == 'CE']['volume'].sum()
+    total_pe_vol = f_df[f_df['type'] == 'PE']['volume'].sum()
+    pcr_val = round(total_pe_vol / max(1, total_ce_vol), 2)
+    pcr_text = f"Intraday Volume PCR: {pcr_val} | " + ("🟢 Bullish Oversold Floor" if pcr_val > 1.25 else "🔴 Bearish Supply Overhang" if pcr_val < 0.75 else "🟡 Neutral Flow Balance")
+    st.markdown(f"<div class='pcr-box'>{pcr_text}</div>", unsafe_allow_html=True)
         
     latest_block = f_df.sort_values(by='id', ascending=False).head(2)
     if len(latest_block) == 2:
         directions = latest_block['direction'].tolist()
-        quadrants = latest_block['quadrant'].tolist()
+        quadrants = latest_block['Quadrant'].tolist()
         target_strike_val = int(latest_block['strike'].iloc[0])
         opt_ltp = float(latest_block['ltp'].iloc[0])
-        total_lots = int(latest_block['volume'].iloc[0])
         exp_tag = latest_block['expiry'].iloc[0]
         
+        vwap_anchor = round(opt_ltp * random.uniform(0.99, 1.01), 1)
         if all("BULLISH" in d for d in directions):
-            vwap_anchor = round(opt_ltp * random.uniform(0.99, 1.01), 1)
             st.markdown(f"""
             <div class='signal-card' style='border: 1px solid #2ebd85; background: rgba(46, 189, 133, 0.04);'>
                 <p style='color: #2ebd85; margin: 0 0 8px 0; font-size:0.82rem; font-weight:700;'>🟢 OB BUY BLOCK: {target_strike_val} | {exp_tag}</p>
@@ -218,7 +244,6 @@ def render_instrument_block(asset_name, df_source):
             </div>
             """, unsafe_allow_html=True)
         else:
-            vwap_anchor = round(opt_ltp * random.uniform(0.99, 1.01), 1)
             st.markdown(f"""
             <div class='signal-card' style='border: 1px solid #f6465d; background: rgba(246, 70, 93, 0.04);'>
                 <p style='color: #f6465d; margin: 0 0 8px 0; font-size:0.82rem; font-weight:700;'>🔴 OB SUPPLY BLOCK: {target_strike_val} | {exp_tag}</p>
@@ -230,14 +255,17 @@ def render_instrument_block(asset_name, df_source):
             </div>
             """, unsafe_allow_html=True)
 
-    # Mini option matrices breakdown tables
     sorted_group = f_df.sort_values(by='id', ascending=False)
     sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume']).head(3)
     
     rows_html = ""
     for _, r in sorted_group.iterrows():
-        c_class = "color: #bbf7d0;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca;"
-        rows_html += f"<tr><td><b>{r['timestamp']}</b></td><td>{r['Target Strike']}</td><td>{r['type']}</td><td style='{c_class}'>{r['Quadrant']}</td><td>{r['volume']:,}</td><td style='color:#ff9f43;'>{r['ltp']:.1f}</td></tr>"
+        # --- FEATURE 2: BOOKMAP HEATMAP INTENSITY GRADIENT SCALES ---
+        heat_opacity = min(1.0, max(0.15, r['volume'] / 1300000.0)) if asset_name not in ["CRUDEOIL","NATURALGAS","GOLD","SILVER"] else min(1.0, max(0.15, r['volume'] / 40000.0))
+        cell_bg = f"rgba(46, 189, 133, {heat_opacity*0.25})" if "BULLISH" in r['Direction Sign'] else f"rgba(246, 70, 93, {heat_opacity*0.25})"
+        text_color = "#bbf7d0" if "BULLISH" in r['Direction Sign'] else "#fecaca"
+        
+        rows_html += f"<tr style='background-color: {cell_bg} !important;'><td style='color:#fff;'><b>{r['timestamp']}</b></td><td>{r['Target Strike']}</td><td>{r['type']}</td><td style='color: {text_color}; font-weight:bold;'>{r['Quadrant']}</td><td style='font-family:monospace; font-weight:600;'>{r['volume']:,}</td><td style='color:#ff9f43; font-weight:bold;'>{r['ltp']:.1f}</td></tr>"
         
     if rows_html:
         table_html = f"""
@@ -246,22 +274,21 @@ def render_instrument_block(asset_name, df_source):
             <tbody>{rows_html}</tbody>
         </table></div>
         """
-        components.html(table_html, height=110, scrolling=False)
+        components.html(table_html, height=105, scrolling=False)
 
-# --- REFRESH ELEMENT FRAGMENT ---
 @st.fragment(run_every=30)
 def render_unified_dashboard_grid():
-    # ---------------- PAGE ROW 1: EQUITY INDICES ----------------
+    render_cross_market_alerts(all_df)
+    
     st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
     idx_col1, idx_col2 = st.columns(2)
     with idx_col1:
-        st.markdown("<div class='asset-title-banner'>NIFTY 50 INFRASTRUCTURE INDEX</div>", unsafe_allow_html=True)
+        st.markdown("<div class='asset-title-banner'>NIFTY 50 INDEX COUNTERS</div>", unsafe_allow_html=True)
         render_instrument_block("NIFTY", all_df)
     with idx_col2:
-        st.markdown("<div class='asset-title-banner'>BANKNIFTY DERIVATIVES COMPLEX</div>", unsafe_allow_html=True)
+        st.markdown("<div class='asset-title-banner'>BANKNIFTY DERIVATIVES MATRIX</div>", unsafe_allow_html=True)
         render_instrument_block("BANKNIFTY", all_df)
 
-    # ---------------- PAGE ROW 2: MCX COMMODITIES ----------------
     st.markdown("<div class='section-header'>🛢️ COMMODITY EXCHANGE (MCX FUTURE & OPTIONS)</div>", unsafe_allow_html=True)
     com_col1, com_col2, com_col3, com_col4 = st.columns(4)
     with com_col1:
@@ -277,14 +304,13 @@ def render_unified_dashboard_grid():
         st.markdown("<div class='asset-title-banner'>SILVER (1KG)</div>", unsafe_allow_html=True)
         render_instrument_block("SILVER", all_df)
 
-    # ---------------- PAGE ROW 3: HEAVYWEIGHT STOCKS ----------------
     st.markdown("<div class='section-header'>🏢 LIQUID NIFTY 50 BLUE-CHIP EQUITIES</div>", unsafe_allow_html=True)
     stk_col1, stk_col2 = st.columns(2)
     with stk_col1:
-        st.markdown("<div class='asset-title-banner'>RELIANCE INDUSTRIES INTRADAY FLOWS</div>", unsafe_allow_html=True)
+        st.markdown("<div class='asset-title-banner'>RELIANCE INDUSTRIES LTD</div>", unsafe_allow_html=True)
         render_instrument_block("RELIANCE", all_df)
     with stk_col2:
-        st.markdown("<div class='asset-title-banner'>HDFC BANK DERIVATIVES COUNTER</div>", unsafe_allow_html=True)
+        st.markdown("<div class='asset-title-banner'>HDFC BANK DERIVATIVES COMPLEX</div>", unsafe_allow_html=True)
         render_instrument_block("HDFCBANK", all_df)
 
 render_unified_dashboard_grid()
