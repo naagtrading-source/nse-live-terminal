@@ -4,12 +4,12 @@ import yfinance as yf
 import json
 import io
 import time
+import math
 import streamlit.components.v1 as components
 from datetime import datetime
 
 st.set_page_config(page_title="Unusual Volume Activity", layout="wide")
 
-# Structural baseline configurations injection
 st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
@@ -22,6 +22,30 @@ st.caption("Real-Time Multi-Asset Block Activity Monitors | Index & Stock Option
 
 if 'global_history' not in st.session_state:
     st.session_state.global_history = []
+
+# --- BLACK-SCHOLES ENGINE FOR REAL-TIME DELTA ---
+def calculate_bs_delta(spot, strike, option_type):
+    try:
+        # Standard tracking parameters: 30 days to expiry, 12% implied volatility, 5% risk-free rate
+        t = 30 / 365
+        v = 0.12
+        r = 0.05
+        
+        d1 = (math.log(spot / strike) + (r + 0.5 * v ** 2) * t) / (v * math.sqrt(t))
+        
+        # Cumulative distribution approximation handler
+        def cnd(x):
+            a1, a2, a3, a4, a5 = 0.31938153, -0.356563782, 1.781477937, -1.821255978, 1.330274429
+            m = 1.0 / (1.0 + 0.2316419 * abs(x))
+            c = 1.0 - 1.0 / math.sqrt(2 * math.pi) * math.exp(-x * x / 2.0) * (a1*m + a2*m**2 + a3*m**3 + a4*m**4 + a5*m**5)
+            return c if x >= 0 else 1.0 - c
+
+        if option_type == 'Call':
+            return round(cnd(d1), 2)
+        else:
+            return round(cnd(d1) - 1.0, 2)
+    except:
+        return 0.50 if option_type == 'Call' else -0.50
 
 def fetch_asset_snapshot(ticker_symbol, is_stock=False):
     try:
@@ -91,7 +115,14 @@ def process_and_render_view(is_stock_view, dropdown_options):
             spikes = df_snap[df_snap['Unusual_Score'] >= 2.8]
             
             for _, row in spikes.iterrows():
-                if row['Type'] == 'Call':
+                opt_type = row['Type']
+                strike_val = int(row['Strike'])
+                spot_val = float(item['Spot'])
+                
+                # Dynamic Black-Scholes Calculation Integration
+                computed_delta = calculate_bs_delta(spot_val, strike_val, opt_type)
+                
+                if opt_type == 'Call':
                     quad = "Call Writing" if row['Chg_OI'] > 0 else "Call Buying"
                     sign = "🔴 BEARISH" if row['Chg_OI'] > 0 else "🟢 BULLISH"
                 else:
@@ -99,8 +130,9 @@ def process_and_render_view(is_stock_view, dropdown_options):
                     sign = "🟢 BULLISH" if row['Chg_OI'] > 0 else "🔴 BEARISH"
                     
                 timeline_records.append({
-                    'Timestamp': curr_ts, 'Asset': item['Asset'], 'Target Strike': int(row['Strike']),
-                    'Quadrant': quad, 'Direction Sign': sign, 'Volume': int(row['Volume']), 'LTP': row['LTP']
+                    'Timestamp': curr_ts, 'Asset': item['Asset'], 'Target Strike': strike_val,
+                    'Type': "CE" if opt_type == "Call" else "PE", 'Quadrant': quad, 
+                    'Direction Sign': sign, 'Volume': int(row['Volume']), 'LTP': row['LTP'], 'Delta': computed_delta
                 })
                 
         all_df = pd.DataFrame(timeline_records)
@@ -127,18 +159,34 @@ def process_and_render_view(is_stock_view, dropdown_options):
                 for strike_price, group in filtered_df.groupby('Target Strike'):
                     sorted_group = group.sort_values(by='Timestamp', ascending=False)
                     
+                    # Compute Summary Statistics for the Top Bar Ribbon Panel
+                    latest_tick = sorted_group.iloc[0]
+                    call_sub = sorted_group[sorted_group['Type'] == 'CE']
+                    put_sub = sorted_group[sorted_group['Type'] == 'PE']
+                    
+                    tot_buyer_vol = int(sorted_group[sorted_group['Quadrant'].str.contains("Buying")]['Volume'].sum())
+                    tot_seller_vol = int(sorted_group[sorted_group['Quadrant'].str.contains("Writing")]['Volume'].sum())
+                    
+                    net_bias = "🟢 STRONG BULLISH ACCUMULATION" if tot_buyer_vol > tot_seller_vol * 1.05 else "🔴 AGGRESSIVE SELLING WAVE"
+                    
                     display_rows = []
                     for _, r in sorted_group.iterrows():
                         color_class = "color: #bbf7d0; background-color: #15803d;" if "BULLISH" in r['Direction Sign'] else "color: #fecaca; background-color: #b91c1c;"
+                        type_badge = "background-color: #0c4a6e; color: #38bdf8;" if r['Type'] == "CE" else "background-color: #7c2d12; color: #fb923c;"
+                        
                         display_rows.append(f"""
                             <tr>
                                 <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;"><b>{r['Timestamp']}</b></td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;">
+                                    <span style="padding: 3px 8px; border-radius: 4px; font-weight: bold; font-size: 0.8rem; {type_badge}">{r['Type']}</span>
+                                </td>
                                 <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-weight: 600; text-align: center;">{r['Quadrant']}</td>
                                 <td style="padding: 12px; border-bottom: 1px solid #2d3142; text-align: center;">
                                     <span style="padding: 4px 10px; border-radius: 12px; font-weight: bold; font-size: 0.8rem; {color_class}">{r['Direction Sign']}</span>
                                 </td>
                                 <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center;">{r['Volume']:,}</td>
                                 <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-weight: bold; color: #ff9f43; text-align: center;">{r['LTP']:,.1f}</td>
+                                <td style="padding: 12px; border-bottom: 1px solid #2d3142; font-family: monospace; text-align: center; font-weight: 600; color: #2ebd85;">{r['Delta']:+.2f}</td>
                             </tr>
                         """)
                     
@@ -146,7 +194,6 @@ def process_and_render_view(is_stock_view, dropdown_options):
                     badge_text = "INDEX" if not is_stock_view else "STOCK"
                     table_body_html = "".join(display_rows)
                     
-                    # FIX: Bundled headers, styles, and body loops inside an autonomous HTML document block
                     complete_card_html = f"""
                     <!DOCTYPE html>
                     <html>
@@ -162,25 +209,47 @@ def process_and_render_view(is_stock_view, dropdown_options):
                                 box-shadow: 0 4px 12px rgba(0,0,0,0.4);
                             }}
                             .badge-custom {{ background-color: {badge_color}; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.75rem; }}
+                            .summary-ribbon {{
+                                background-color: #1b1f2e;
+                                border-radius: 4px;
+                                padding: 10px 15px;
+                                margin-bottom: 15px;
+                                display: flex;
+                                justify-content: space-between;
+                                align-items: center;
+                                font-size: 0.85rem;
+                                border: 1px solid #2d334a;
+                            }}
+                            .stat-box {{ text-align: center; }}
+                            .stat-val {{ font-weight: bold; color: #2ebd85; font-family: monospace; }}
                             th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.78rem; letter-spacing: 0.5px; text-align: center; padding: 12px !important; }}
                         </style>
                     </head>
                     <body>
                         <div class="strike-card">
-                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
                                 <h4 style="margin: 0; color: #fff; font-size: 1.1rem; font-weight: 600;">
                                     <span class="badge-custom">{asset_selection} {badge_text}</span> Target Contract Strike Price: <span style="color: #ff9f43;">🎯 {strike_price}</span>
                                 </h4>
                             </div>
+                            
+                            <div class="summary-ribbon">
+                                <div class="stat-box">Total Buyer Vol: <span class="stat-val" style="color: #38bdf8;">{tot_buyer_vol:,}</span></div>
+                                <div class="stat-box">Total Seller Vol: <span class="stat-val" style="color: #fb923c;">{tot_seller_vol:,}</span></div>
+                                <div class="stat-box">Strike Trend: <span class="stat-val" style="color: #ff9f43;">{net_bias}</span></div>
+                            </div>
+
                             <div class="table-responsive" style="border-radius: 4px; overflow: hidden;">
                                 <table class="table table-dark table-striped m-0" style="width: 100%; border-collapse: collapse;">
                                     <thead>
                                         <tr>
                                             <th>TIMESTAMP</th>
+                                            <th>TYPE</th>
                                             <th>FLOW QUADRANT</th>
                                             <th>DIRECTION SENTIMENT</th>
                                             <th>VOLUME ACCUMULATION</th>
                                             <th>LAST TRADED PRICE (LTP)</th>
+                                            <th>DELTA (Δ)</th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -193,8 +262,8 @@ def process_and_render_view(is_stock_view, dropdown_options):
                     </html>
                     """
                     
-                    # FIX: Injected the complete native component container block with fixed dynamic height rules
-                    components.html(complete_card_html, height=280, scrolling=True)
+                    # Render the frame with adequate height to avoid internal clipping
+                    components.html(complete_card_html, height=340, scrolling=True)
             else:
                 st.info("⏳ Processing live order blocks... Surges will map within 60 seconds.")
         else:
