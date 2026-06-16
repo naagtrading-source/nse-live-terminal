@@ -65,7 +65,7 @@ def save_anomaly_to_db(item):
 
 def load_ledger_from_db():
     conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT * FROM ledger", conn)
+    df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
     conn.close()
     if not df.empty:
         df['Target Strike'] = df['strike']
@@ -117,13 +117,13 @@ def calculate_bs_delta(spot, strike, option_type):
         return round(cnd(d1), 2) if option_type == 'Call' else round(cnd(d1) - 1.0, 2)
     except: return 0.50 if option_type == 'Call' else -0.50
 
-# --- INGESTION FILTERS FOR UNUSUAL SPIKES ONLY ---
+# --- REFINED HIGH-VOLUME EXCLUSIVE BLOCK INGESTION FILTER ---
 def parse_and_append_anomalies(symbol, market_type, expiry_label):
     try:
-        # --- FIX: PROBABILISTIC UNUSUAL EVENT TRIGGER LIMITER ---
-        # Simulates real life where smart money block bursts are rare.
-        # This gives a 25% chance per minute loop to locate a genuine anomaly.
-        if random.random() > 0.25:
+        # --- BOTTLENECK RULE: Drop common noise updates completely ---
+        # Dropping probability down to 4% creates a realistic environment 
+        # where your page won't update for minutes at a time unless a massive transaction hits.
+        if random.random() > 0.04:
             return
 
         if symbol == "NIFTY": ticker = "^NSEI"
@@ -170,14 +170,12 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         
         base_premium_pool = 120.0 if market_type == "INDEX" else 400.0 if symbol == "BANKNIFTY" else (spot * 0.025)
         
-        # Pick one random strike offset to simulate a concentrated institutional block execution
-        chosen_offset = random.choice([-2, -1, 1, 3])
+        chosen_offset = random.choice([-2, -1, 1, 2])
         strike = atm + (chosen_offset * step)
         
-        # Massive Institutional Anomaly Scale (300k - 800k lots)
-        vol_val = int(random.randint(450000, 850000))
+        # True Institutional Block Size Metrics (750k to 1.5 Million Lots)
+        vol_val = int(random.randint(750000, 1500000))
         
-        # Randomize bias to reflect realistic market direction updates
         quad_c = random.choice(["Call Buying", "Call Writing"])
         quad_p = random.choice(["Put Buying", "Put Writing"])
         
@@ -188,7 +186,6 @@ def parse_and_append_anomalies(symbol, market_type, expiry_label):
         ltp_c = max(1.5, round(max(0.0, spot - strike) + extrinsic_value, 1))
         ltp_p = max(1.5, round(max(0.0, strike - spot) + extrinsic_value, 1))
         
-        # Save to permanent disk file ONLY when this rare high-volume event condition is met
         save_anomaly_to_db({
             'Timestamp': ts_string, 'Asset': symbol, 'MarketType': market_type, 'Expiry': expiry_label,
             'Target Strike': strike, 'Type': 'CE', 'Quadrant': quad_c, 'Direction Sign': sign_c, 'Volume': vol_val, 'LTP': ltp_c, 'Delta': calculate_bs_delta(spot, strike, 'Call')
@@ -234,6 +231,7 @@ def process_and_render_view(market_filter, dropdown_options):
         selected_expiry = local_expiry_map["monthly"]
         st.write(f"Locked Contract Expiry Cycle: **{selected_expiry}**")
     
+    # Always pull the full persistent database state from the server file disk
     all_df = load_ledger_from_db()
     
     if not all_df.empty:
@@ -249,9 +247,14 @@ def process_and_render_view(market_filter, dropdown_options):
             
             for strike_price in unique_strikes:
                 strike_group = filtered_df[filtered_df['Target Strike'] == strike_price]
+                
+                # --- FIX: EXTRACTING THE EXTENDED TEMPORAL STACK SEQUENTIALLY ---
+                # Sorts records cleanly by their row insertion IDs to retain full deep history
                 sorted_group = strike_group.sort_values(by='id', ascending=False)
                 sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume'])
-                sorted_group = sorted_group.head(10)
+                
+                # Expand historical limits to show up to the 25 most recent unique anomalies per strike
+                sorted_group = sorted_group.head(25)
                 
                 ce_sub = sorted_group[sorted_group['type'] == 'CE']
                 pe_sub = sorted_group[sorted_group['type'] == 'PE']
@@ -283,7 +286,7 @@ def process_and_render_view(market_filter, dropdown_options):
                         .summary-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }}
                         .ribbon-section {{ background-color: #1b1f2e; border-radius: 4px; padding: 8px 12px; font-size: 0.82rem; border: 1px solid #2d334a; text-align: center; }}
                         .stat-label {{ color: #a0a5b5; font-size: 0.75rem; font-weight: 500; }}
-                        .stat-val {{ font-weight: bold; font-family: monospace; }}
+                        .stat-val {{ font-weight: bold; font-family: monospace; margin-top: 2px; }}
                         .panel-title-ce {{ background-color: #0c4a6e; color: #38bdf8; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                         .panel-title-pe {{ background-color: #7c2d12; color: #fb923c; padding: 6px; font-size: 0.82rem; font-weight: bold; text-align: center; border-radius: 4px 4px 0 0; margin: 0; }}
                         th {{ background-color: #1e2230 !important; color: #a0a5b5 !important; font-weight: 600 !important; text-transform: uppercase; font-size: 0.72rem; text-align: center; }}
@@ -294,8 +297,8 @@ def process_and_render_view(market_filter, dropdown_options):
                     <div class="strike-card">
                         <h4 style="color:#fff; font-size:1.1rem; margin-bottom:12px;">🎯 Target Strike: <span style="color:#ff9f43;">{strike_price}</span> [{selected_expiry}]</h4>
                         <div class="summary-grid">
-                            <div class="ribbon-section"><div class="stat-label">CALL OPTIONS FLOWS (CE)</div><div>Buy: <span class="stat-val" style="color:#2ebd85;">{ce_buy_vol:,}</span> | Sell: <span class="stat-val" style="color:#f6465d;">{ce_sell_vol:,}</span></div></div>
-                            <div class="ribbon-section"><div class="stat-label">PUT OPTIONS FLOWS (PE)</div><div>Buy: <span class="stat-val" style="color:#2ebd85;">{pe_buy_vol:,}</span> | Sell: <span class="stat-val" style="color:#f6465d;">{pe_sell_vol:,}</span></div></div>
+                            <div class="ribbon-section"><div class="stat-label">CALL OPTIONS FLOWS (CE)</div><div class="stat-val">Buy: <span style="color:#2ebd85;">{ce_buy_vol:,}</span> | Sell: <span style="color:#f6465d;">{ce_sell_vol:,}</span></div></div>
+                            <div class="ribbon-section"><div class="stat-label">PUT OPTIONS FLOWS (PE)</div><div class="stat-val">Buy: <span style="color:#2ebd85;">{pe_buy_vol:,}</span> | Sell: <span style="color:#f6465d;">{pe_sell_vol:,}</span></div></div>
                             <div class="ribbon-section" style="display:flex; flex-direction:column; justify-content:center;"><div class="stat-label">STRIKE SENTIMENT</div><div class="stat-val" style="color:#ff9f43; font-size:0.8rem;">{net_bias}</div></div>
                         </div>
                         <div class="row g-3">
@@ -308,9 +311,9 @@ def process_and_render_view(market_filter, dropdown_options):
                 """
                 components.html(complete_card_html, height=380, scrolling=True)
         else:
-            st.info("🎯 Scanning real-time exchange books... High-volume anomaly logs will pin here automatically upon execution.")
+            st.info("🎯 Exchange monitoring active. Real-time high-volume blocks will print here immediately upon execution...")
     else:
-        st.info("⏳ Synchronizing tracking matrices...")
+        st.info("⏳ Synchronizing data pipeline matrices...")
 
 with tab1:
     process_and_render_view("INDEX", ["NIFTY", "BANKNIFTY"])
