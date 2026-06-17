@@ -10,12 +10,16 @@ st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout=
 
 st.markdown("""
     <style>
-    .main { background-color: #0b0c10; color: #e4e6eb; }
+    /* Force overall app dark-mode background and solid base colors */
+    .stApp, .main, [data-testid="stAppViewContainer"] { 
+        background-color: #0b0c10 !important; 
+        color: #e4e6eb !important; 
+    }
     
-    /* Global SNY Top Header Styling */
+    /* Global SNY Top Header Styling - Forced Contrast and Visibility */
     .global-top-header {
-        background: linear-gradient(90deg, #1f2231 0%, #141722 100%);
-        padding: 12px 24px;
+        background: linear-gradient(90deg, #1f2231 0%, #141722 100%) !important;
+        padding: 16px 24px;
         border-radius: 6px;
         margin-bottom: 20px;
         border-bottom: 3px solid #ff9f43;
@@ -24,44 +28,48 @@ st.markdown("""
         justify-content: space-between;
     }
     .brand-title {
-        color: #ffffff;
+        color: #ffffff !important;
         font-family: 'Montserrat', sans-serif;
-        font-size: 1.8rem;
-        font-weight: 900;
-        letter-spacing: 3px;
+        font-size: 2.2rem !important;
+        font-weight: 900 !important;
+        letter-spacing: 4px;
         margin: 0;
-        text-shadow: 0 0 10px rgba(255,159,67,0.3);
+        /* Drop shadow ensures visibility regardless of canvas layer overrides */
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.8), 0 0 15px rgba(255,159,67,0.6) !important;
     }
     .brand-sub {
-        color: #ff9f43;
+        color: #ff9f43 !important;
         font-family: monospace;
-        font-size: 0.75rem;
-        font-weight: bold;
+        font-size: 0.85rem !important;
+        font-weight: 900 !important;
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.8) !important;
     }
     
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 10px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
-    .section-header.stocks { color: #512da8; border-left: 4px solid #7c4dff; }
+    .section-header.stocks { color: #8bb2f9; border-left: 4px solid #4a90e2; }
     .section-header.commodity { color: #00ffcc; border-left: 4px solid #00ffcc; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
     
-    /* Responsive Fluid Layout Rows */
+    /* Fluid Layout Rows - Realigned Contrast Values */
     .ticker-row {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 8px 12px;
-        margin-bottom: 4px;
+        padding: 10px 14px;
+        margin-bottom: 6px;
         border-radius: 4px;
         font-family: monospace;
-        font-size: 0.75rem;
-        gap: 10px;
+        font-size: 0.78rem;
+        gap: 12px;
+        box-shadow: inset 0 0 8px rgba(0,0,0,0.5);
     }
     .col-left { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
     .col-right { display: flex; flex-direction: column; align-items: flex-end; text-align: right; min-width: max-content; }
     
-    .symbol-txt { color: #ff9f43; font-weight: 900; font-size: 0.82rem; word-break: break-all; }
-    .meta-txt { color: #a0a5b5; font-size: 0.65rem; }
-    .vol-txt { color: #ffffff; font-weight: bold; }
+    /* Brightened symbol colors for deep contrast */
+    .symbol-txt { color: #ffb366 !important; font-weight: 900; font-size: 0.85rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.9); }
+    .meta-txt { color: #cbd0df !important; font-size: 0.68rem; font-weight: bold; }
+    .vol-txt { color: #ffffff !important; font-weight: 900; font-size: 0.75rem; text-shadow: 1px 1px 1px rgba(0,0,0,0.8); }
     </style>
 """, unsafe_allow_html=True)
 
@@ -149,35 +157,35 @@ st.session_state["internal_data_buffer"] = st.session_state["internal_data_buffe
 all_df = pd.DataFrame(st.session_state["internal_data_buffer"])
 
 # -----------------------------------------------------------------------------
-# CORE FLEXBOX CELL DRAWER ENGINE
+# CORE FLEXBOX CELL DRAWER ENGINE (With Forced High-Contrast Visibility)
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown("<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Awaiting raw data flow...</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#bbb;font-size:0.85rem;padding-left:10px;'>Awaiting raw data flow...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} blocks...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#bbb;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} blocks...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
     for _, r in f_df.iterrows():
         is_bull = "BULLISH" in str(r.get('direction', '')).upper() or "BUY" in str(r.get('quadrant', '')).upper()
-        badge_color = "#2ebd85" if is_bull else "#f6465d"
-        bg_row_effect = "rgba(46, 189, 133, 0.06)" if is_bull else "rgba(246, 70, 93, 0.06)"
+        badge_color = "#00ff88" if is_bull else "#ff3355" # Boosted contrast targets
+        bg_row_effect = "rgba(0, 255, 136, 0.12)" if is_bull else "rgba(255, 51, 85, 0.12)"
         
         formatted_symbol = f"{asset_filter}{r['expiry']}{r['strike']}{r['type']}"
         vol_amt = int(r.get('volume', 0))
 
         rows_html += f"""
-        <div class="ticker-row" style="background-color: {bg_row_effect}; border-left: 3px solid {badge_color};">
+        <div class="ticker-row" style="background-color: {bg_row_effect}; border-left: 4px solid {badge_color};">
             <div class="col-left">
                 <span class="symbol-txt">{formatted_symbol}</span>
-                <span class="meta-txt">🕒 {r['timestamp']} | 🚨 INSTANT SPIKE</span>
+                <span class="meta-txt">🕒 {r['timestamp']} | INSTANT SPIKE</span>
             </div>
             <div class="col-right">
-                <span style="color: {badge_color}; font-weight: bold;">{r['delta']}</span>
+                <span style="color: {badge_color}; font-weight: 900; font-size: 0.8rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.9);">{r['delta']}</span>
                 <span class="vol-txt">V: {vol_amt:,}</span>
                 <span class="meta-txt">LTP: {round(float(r.get('ltp', 0.0)), 1)}</span>
             </div>
