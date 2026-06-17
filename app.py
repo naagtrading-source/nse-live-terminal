@@ -57,7 +57,6 @@ def get_session():
         # The SDK imports streamlit internally as its own reference.
         # We must patch it inside the SDK's own module namespace.
         import neo_api_client
-        import neo_api_client.neo_api_client as neo_mod
         dummy = mock.MagicMock()
 
         # Find all submodules that may call st
