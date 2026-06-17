@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-import db_provider
-import random
+import sqlite3
+from kotak_auth import get_kotak_client
 
 st.set_page_config(page_title="Institutional Clusters", layout="wide", page_icon="🎯")
 
@@ -20,57 +20,71 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🎯 Institutional High-Density Volume Clusters")
-st.caption("Value Area Accumulation Scanners | Isolating Symmetrical Smart Money Entry Walls")
+st.caption("Value Area Accumulation Scanners | Live Kotak Data Node Order Walls")
 
-# Run background loop synchronization
-db_provider.run_automated_generation_cycle()
-df = db_provider.load_ledger_from_db()
+DB_FILE = "terminal_history.db"
 
-if df.empty:
-    st.info("⏳ Synchronizing options value area matrices... Run the main cockpit tab to start streaming data.")
-else:
-    st.write("### 🚨 Live Institutional Value Area Formations")
-    
-    for asset, group in df.groupby('asset'):
-        recent = group.head(15)
-        total_vol = int(recent['volume'].sum())
+def load_ledger_from_db():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
+
+@st.fragment(run_every=10)
+def render_clusters_view():
+    df = load_ledger_from_db()
+
+    if df.empty:
+        st.info("⏳ Synchronizing options value area matrices... Awaiting active block data from cloud nodes.")
+    else:
+        st.write("### 🚨 Live Institutional Value Area Formations")
         
-        # Cleanly extract raw integers to fix the data type presentation bug
-        strikes = sorted([int(x) for x in recent['Target Strike'].unique()])
-        
-        # If institutional volume is heavily loading into 1 or 2 specific strike targets
-        if len(strikes) <= 2 and total_vol > 50000:
-            is_long_accumulation = "Call Buying" in recent['Quadrant'].values or "Put Writing" in recent['Quadrant'].values
+        for asset, group in df.groupby('asset'):
+            recent = group.head(15)
+            total_vol = int(recent['volume'].sum())
             
-            opt_ltp = float(recent['ltp'].iloc[0])
-            wall_price = round(opt_ltp, 1)
+            # FIXED: Using lowercase 'strike' to match true database schema column name
+            strikes = sorted([int(x) for x in recent['strike'].unique()])
             
-            if is_long_accumulation:
-                card_border = "#2ebd85"
-                badge_html = "<span class='action-badge-long'>🟢 ELITE ACCUMULATION (PUMP FLOOR)</span>"
-                strategy = f"<b>Trade Plan:</b> Institutions are building a massive buy wall at Strike <b>{strikes[0]}</b>. Do not chase the market. Set a limit buy order right at the <b>Retest Entry Line ({wall_price})</b>. If the premium breaks below the stop loss line, close the trade immediately."
-                stop_loss = round(wall_price * 0.85, 1)
-                target = round(wall_price * 1.35, 1)
-            else:
-                card_border = "#f6465d"
-                badge_html = "<span class='action-badge-short'>🔴 ELITE DISTRIBUTION (SUPPLY CEILING)</span>"
-                strategy = f"<b>Trade Plan:</b> Institutions are blocking the upside at Strike <b>{strikes[0]}</b> by heavily selling calls or buying puts. Look for short entries or protect existing longs. The <b>Short Entry Line is {wall_price}</b> with an invalidation stop loss right above it."
-                stop_loss = round(wall_price * 1.15, 1)
-                target = round(wall_price * 0.60, 1)
+            # If institutional volume is heavily loading into concentrated strike targets
+            if len(strikes) <= 3 and total_vol > 10000:
+                quadrants_seen = recent['quadrant'].astype(str).tolist()
+                is_long_accumulation = any("Buying" in q or "Writing" in q for q in quadrants_seen)
+                
+                opt_ltp = float(recent['ltp'].iloc[0])
+                wall_price = round(opt_ltp, 1)
+                
+                if is_long_accumulation:
+                    card_border = "#2ebd85"
+                    badge_html = "<span class='action-badge-long'>🟢 ELITE ACCUMULATION (PUMP FLOOR)</span>"
+                    strategy = f"<b>Trade Plan:</b> Institutions are building a massive buy wall at Strike <b>{strikes[0]}</b>. Set a limit buy order right at the <b>Retest Entry Line ({wall_price})</b>. Maintain tight risk invalidation below the stop line."
+                    stop_loss = round(wall_price * 0.85, 1)
+                    target = round(wall_price * 1.35, 1)
+                else:
+                    card_border = "#f6465d"
+                    badge_html = "<span class='action-badge-short'>🔴 ELITE DISTRIBUTION (SUPPLY CEILING)</span>"
+                    strategy = f"<b>Trade Plan:</b> Institutions are blocking the upside at Strike <b>{strikes[0]}</b>. The <b>Short Entry Line is {wall_price}</b> with an invalidation stop loss set right above it."
+                    stop_loss = round(wall_price * 1.15, 1)
+                    target = round(wall_price * 0.60, 1)
 
-            st.markdown(f"""
-            <div class='cluster-card' style='border-left: 5px solid {card_border};'>
-                <div class='c-header'>
-                    <div>🎯 {asset} ORDER WALL</div>
-                    {badge_html}
+                st.markdown(f"""
+                <div class='cluster-card' style='border-left: 5px solid {card_border};'>
+                    <div class='c-header'>
+                        <div>🎯 {asset} ORDER WALL</div>
+                        {badge_html}
+                    </div>
+                    <div class='strategy-note'>{strategy}</div>
+                    <div class='row g-2'>
+                        <div class='col-md-3'><div class='box-grid'><div class='box-lbl'>Institutional Strike Wall</div><div class='box-val' style='color:#fff;'>{strikes[0]}</div></div></div>
+                        <div class='col-md-3'><div class='box-grid' style='border-color:{card_border};'><div class='box-lbl' style='color:{card_border}; font-weight:700;'>Retest Entry Line</div><div class='box-val' style='color:#fff;'>{wall_price}</div></div></div>
+                        <div class='col-md-3'><div class='box-grid'><div class='box-lbl'>Defensive Stop Loss</div><div class='box-val' style='color:#f6465d;'>{stop_loss}</div></div></div>
+                        <div class='col-md-3'><div class='box-grid'><div class='box-lbl'>Take Profit Target</div><div class='box-val' style='color:#2ebd85;'>{target}</div></div></div>
+                    </div>
+                    <p style='font-size:0.72rem; color:#666; margin:10px 0 0 0; text-align:right;'>Total Consolidated Position Size: {total_vol:,} lots | Block Capture Time: {recent['timestamp'].iloc[0]}</p>
                 </div>
-                <div class='strategy-note'>{strategy}</div>
-                <div class='row g-2'>
-                    <div class='col-md-3'><div class='box-grid'><div class='box-lbl'>Institutional Strike Wall</div><div class='box-val' style='color:#fff;'>{strikes[0]}</div></div></div>
-                    <div class='col-md-3'><div class='box-grid' style='border-color:{card_border};'><div class='box-lbl' style='color:{card_border}; font-weight:700;'>Retest Entry Line</div><div class='box-val' style='color:#fff;'>{wall_price}</div></div></div>
-                    <div class='col-md-3'><div class='box-grid'><div class='box-lbl'>Defensive Stop Loss</div><div class='box-val' style='color:#f6465d;'>{stop_loss}</div></div></div>
-                    <div class='col-md-3'><div class='box-grid'><div class='box-lbl'>Take Profit Target</div><div class='box-val' style='color:#2ebd85;'>{target}</div></div></div>
-                </div>
-                <p style='font-size:0.72rem; color:#666; margin:10px 0 0 0; text-align:right;'>Total Consolidated Position Size: {total_vol:,} lots | Block Capture Time: {recent['timestamp'].iloc[0]}</p>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+
+render_clusters_view()
