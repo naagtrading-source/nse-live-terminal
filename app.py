@@ -34,28 +34,32 @@ st.markdown("---")
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 INDICES = {
-    "NIFTY":     {"fo_seg":"nse_fo","step":50,  "base":24500,"exp":"26JUN26","lot":75},
-    "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "base":55000,"exp":"25JUN26","lot":30},
-    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,  "base":25000,"exp":"24JUN26","lot":40},
-    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,  "base":12000,"exp":"26JUN26","lot":75},
-    "SENSEX":    {"fo_seg":"bse_fo","step":100, "base":80000,"exp":"27JUN26","lot":10},
+    # Fallback base prices only — live prices fetched from API during market hours
+    "NIFTY":     {"fo_seg":"nse_fo","step":50,  "base":24400,"exp":"26JUN26","lot":75},
+    "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "base":54000,"exp":"25JUN26","lot":30},
+    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,  "base":24000,"exp":"24JUN26","lot":40},
+    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,  "base":12500,"exp":"26JUN26","lot":75},
+    "SENSEX":    {"fo_seg":"bse_fo","step":100, "base":80500,"exp":"27JUN26","lot":10},
 }
 
 STOCKS = {
+    # Fallback base prices only — live prices fetched from API during market hours
     "RELIANCE":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1450, "exp":"26JUN26","lot":250},
-    "HDFCBANK":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1900, "exp":"26JUN26","lot":550},
-    "TCS":       {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":100, "base":3500, "exp":"26JUN26","lot":175},
-    "INFY":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1600, "exp":"26JUN26","lot":400},
-    "ICICIBANK": {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1400, "exp":"26JUN26","lot":700},
-    "SBIN":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":10,  "base":830,  "exp":"26JUN26","lot":1500},
+    "HDFCBANK":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1950, "exp":"26JUN26","lot":550},
+    "TCS":       {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":100, "base":3600, "exp":"26JUN26","lot":175},
+    "INFY":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1650, "exp":"26JUN26","lot":400},
+    "ICICIBANK": {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1450, "exp":"26JUN26","lot":700},
+    "SBIN":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":10,  "base":840,  "exp":"26JUN26","lot":1500},
 }
 
 COMMODITIES = {
-    "GOLD":      {"fo_seg":"mcx_fo","step":100, "base":97000,"exp":"05AUG26","lot":100},
-    "SILVER":    {"fo_seg":"mcx_fo","step":100, "base":97000,"exp":"05JUL26","lot":30},
-    "CRUDEOIL":  {"fo_seg":"mcx_fo","step":100, "base":6500, "exp":"17JUL26","lot":100},
-    "NATURALGAS":{"fo_seg":"mcx_fo","step":10,  "base":330,  "exp":"25JUL26","lot":1250},
-    "COPPER":    {"fo_seg":"mcx_fo","step":5,   "base":870,  "exp":"28JUL26","lot":2500},
+    # MCX prices as of Jun 2026 — used only as fallback when market is closed
+    # Live prices always fetched from API during market hours
+    "GOLD":      {"fo_seg":"mcx_fo","step":100,  "base":96000, "exp":"05AUG26","lot":100},
+    "SILVER":    {"fo_seg":"mcx_fo","step":100,  "base":93000, "exp":"05JUL26","lot":30},
+    "CRUDEOIL":  {"fo_seg":"mcx_fo","step":100,  "base":6500,  "exp":"17JUL26","lot":100},
+    "NATURALGAS":{"fo_seg":"mcx_fo","step":10,   "base":330,   "exp":"25JUL26","lot":1250},
+    "COPPER":    {"fo_seg":"mcx_fo","step":5,    "base":870,   "exp":"28JUL26","lot":2500},
 }
 
 # Volume spike threshold: flag if current vol > N× average
@@ -405,12 +409,33 @@ def render_scanner(label, symbols_meta, is_index=True):
 
     ist       = pytz.timezone("Asia/Kolkata")
     now_ist   = datetime.now(ist)
-    market_open = now_ist.replace(hour=9, minute=15, second=0)
-    market_close= now_ist.replace(hour=15, minute=30, second=0)
-    is_live   = market_open <= now_ist <= market_close and now_ist.weekday() < 5
+    wd        = now_ist.weekday()  # 0=Mon, 6=Sun
+
+    # NSE: Mon–Fri 09:15–15:30
+    nse_open  = now_ist.replace(hour=9,  minute=15, second=0, microsecond=0)
+    nse_close = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+    nse_live  = nse_open <= now_ist <= nse_close and wd < 5
+
+    # MCX: Mon–Fri 09:00–23:30, Sat 09:00–14:00
+    mcx_open  = now_ist.replace(hour=9,  minute=0,  second=0, microsecond=0)
+    mcx_close_wkday = now_ist.replace(hour=23, minute=30, second=0, microsecond=0)
+    mcx_close_sat   = now_ist.replace(hour=14, minute=0,  second=0, microsecond=0)
+    if wd < 5:
+        mcx_live = mcx_open <= now_ist <= mcx_close_wkday
+    elif wd == 5:  # Saturday
+        mcx_live = mcx_open <= now_ist <= mcx_close_sat
+    else:
+        mcx_live = False
+
+    # Determine if THIS tab's segment is live
+    is_mcx  = any("mcx" in m.get("fo_seg","") for m in symbols_meta.values())
+    is_live = mcx_live if is_mcx else nse_live
 
     if not is_live:
-        st.info(f"🌙 Market closed — showing simulated data for UI preview. Market opens 9:15 AM IST.")
+        seg_label = "MCX" if is_mcx else "NSE"
+        open_time = "9:00 AM" if is_mcx else "9:15 AM"
+        close_time= "11:30 PM (Mon–Fri), 2:00 PM (Sat)" if is_mcx else "3:30 PM"
+        st.info(f"🌙 {seg_label} market closed — showing simulated preview. Hours: {open_time}–{close_time} IST")
 
     all_rows = []
     cols = st.columns(min(len(symbols_meta), 3))
@@ -419,7 +444,7 @@ def render_scanner(label, symbols_meta, is_index=True):
         with cols[idx % len(cols)]:
             with st.spinner(f"Scanning {symbol}..."):
                 if api and auth_status == "OK" and is_live:
-                    rows = scan_symbol(symbol, meta, is_index)
+                    rows = scan_symbol(symbol, meta, is_index or is_mcx)
                 else:
                     rows = _fake_scan(symbol, meta)
 
@@ -531,7 +556,10 @@ def _fake_scan(symbol, meta):
 # HEADER STATUS
 # ─────────────────────────────────────────────────────────────────────────────
 ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
-is_mkt  = ist_now.replace(hour=9,minute=15,second=0) <= ist_now <= ist_now.replace(hour=15,minute=30,second=0) and ist_now.weekday() < 5
+_wd = ist_now.weekday()
+_nse_live = (ist_now.replace(hour=9,minute=15,second=0) <= ist_now <= ist_now.replace(hour=15,minute=30,second=0)) and _wd < 5
+_mcx_live = (ist_now.replace(hour=9,minute=0,second=0) <= ist_now <= ist_now.replace(hour=23,minute=30,second=0)) and _wd < 5 or             (ist_now.replace(hour=9,minute=0,second=0) <= ist_now <= ist_now.replace(hour=14,minute=0,second=0)) and _wd == 5
+is_mkt = _nse_live or _mcx_live
 
 c1, c2, c3, c4 = st.columns(4)
 with c1:
