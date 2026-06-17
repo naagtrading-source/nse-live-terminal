@@ -11,18 +11,37 @@ st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout=
 st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
-    .stTable, table { width: 100% !important; table-layout: fixed !important; }
-    .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
+    .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 10px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
+    .section-header.stocks { color: #512da8; border-left: 4px solid #7c4dff; }
     .section-header.commodity { color: #00ffcc; border-left: 4px solid #00ffcc; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
+    
+    /* Responsive Fluid Layout Rows */
+    .ticker-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 12px;
+        margin-bottom: 4px;
+        border-radius: 4px;
+        font-family: monospace;
+        font-size: 0.75rem;
+        gap: 10px;
+    }
+    .col-left { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+    .col-right { display: flex; flex-direction: column; align-items: flex-end; text-align: right; min-width: max-content; }
+    
+    .symbol-txt { color: #ff9f43; font-weight: 900; font-size: 0.82rem; word-break: break-all; }
+    .meta-txt { color: #a0a5b5; font-size: 0.65rem; }
+    .vol-txt { color: #ffffff; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | Internal Core Stream Pipeline")
+st.caption("Cross-Asset Order Book Feed Engine | Tabbed Grid Framework")
 
 # -----------------------------------------------------------------------------
-# INTERNAL MEMORY ENGINE LAYER
+# INTERNAL CORE MEMORY GENERATOR ENGINE
 # -----------------------------------------------------------------------------
 if "internal_data_buffer" not in st.session_state:
     st.session_state["internal_data_buffer"] = []
@@ -45,26 +64,33 @@ def get_expiry_date(asset_name, market_type):
 
 def generate_live_spike():
     all_assets = [
-        ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"),
-        ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), 
-        ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY")
+        # TAB 1 Assets
+        ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"), ("SENSEX", "INDEX"),
+        # TAB 2 Assets (Nifty 50 Heavies)
+        ("RELIANCE", "STOCK"), ("TCS", "STOCK"), ("INFY", "STOCK"), ("HDFCBANK", "STOCK"), ("ICICIBANK", "STOCK"),
+        # TAB 3 Assets
+        ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY")
     ]
     ist_tz = pytz.timezone('Asia/Kolkata')
     ts_string = datetime.now(ist_tz).strftime("%H:%M:%S")
     symbol, market_type = random.choice(all_assets)
     
-    fallback = {"NIFTY": 23350, "BANKNIFTY": 50300, "CRUDEOIL": 6500, "NATURALGAS": 225, "GOLD": 72600, "SILVER": 88500}
+    fallback = {
+        "NIFTY": 23350, "BANKNIFTY": 50300, "SENSEX": 76800,
+        "RELIANCE": 2950, "TCS": 3850, "INFY": 1500, "HDFCBANK": 1600, "ICICIBANK": 1150,
+        "CRUDEOIL": 6500, "NATURALGAS": 225, "GOLD": 72600, "SILVER": 88500
+    }
     spot = fallback.get(symbol, 100.0)
-    step = 50 if symbol == "NIFTY" else 100 if symbol in ["BANKNIFTY","CRUDEOIL","GOLD"] else 250 if symbol == "SILVER" else 5
+    step = 50 if symbol == "NIFTY" else 100 if symbol in ["BANKNIFTY","CRUDEOIL","GOLD"] else 250 if symbol in ["SILVER","SENSEX"] else 20
     
     atm = round(spot / step) * step
     strike = int(atm + (random.choice([-1, 0, 1]) * step))
-    vol_val = random.randint(65000, 130000) if market_type == "INDEX" else random.randint(15000, 38000)
+    vol_val = random.randint(65000, 130000) if market_type == "INDEX" else random.randint(10000, 45000)
     
     contract_type = random.choice(["CE", "PE"])
     quadrant = "Call Buying Flow" if contract_type == "CE" else "Put Buying Sweep"
     direction = "🟢 BULLISH" if contract_type == "CE" else "🔴 BEARISH"
-    ltp = round(random.uniform(85.0, 450.0), 1)
+    ltp = round(random.uniform(25.0, 650.0), 1)
     surge_pct = f"+{round(random.uniform(400.0, 1300.0), 1)}%"
     expiry_label = get_expiry_date(symbol, market_type)
     
@@ -76,90 +102,118 @@ def generate_live_spike():
     }
 
 if len(st.session_state["internal_data_buffer"]) == 0:
-    for _ in range(5):  
+    for _ in range(12):  
         st.session_state["internal_data_buffer"].append(generate_live_spike())
 
 st.session_state["internal_data_buffer"].insert(0, generate_live_spike())
-st.session_state["internal_data_buffer"] = st.session_state["internal_data_buffer"][:40]
+st.session_state["internal_data_buffer"] = st.session_state["internal_data_buffer"][:60]
 
 all_df = pd.DataFrame(st.session_state["internal_data_buffer"])
 
 # -----------------------------------------------------------------------------
-# TERMINAL MATRIX RENDERER (With explicit column widths to prevent overlapping)
+# CORE FLEXBOX CELL DRAWER ENGINE
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Awaiting live feed metrics...</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Awaiting raw data flow...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} order books...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} blocks...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
     for _, r in f_df.iterrows():
         is_bull = "BULLISH" in str(r.get('direction', '')).upper() or "BUY" in str(r.get('quadrant', '')).upper()
         badge_color = "#2ebd85" if is_bull else "#f6465d"
-        bg_row_effect = "rgba(46, 189, 133, 0.08)" if is_bull else "rgba(246, 70, 93, 0.08)"
+        bg_row_effect = "rgba(46, 189, 133, 0.06)" if is_bull else "rgba(246, 70, 93, 0.06)"
         
-        contract_type = str(r.get('type', 'CE')).upper()
-        strike_val = int(r.get('strike', 0))
-        expiry_lbl = str(r.get('expiry', '26DEC')).upper()
-        
-        formatted_symbol = f"{asset_filter}{expiry_lbl}{strike_val}{contract_type}"
+        formatted_symbol = f"{asset_filter}{r['expiry']}{r['strike']}{r['type']}"
         vol_amt = int(r.get('volume', 0))
-        surge_val = str(r.get('delta', "+0.0%"))
 
         rows_html += f"""
-        <tr style='background-color: {bg_row_effect} !important; border-bottom: 1px solid #1f2231; font-size: 0.75rem;'>
-            <td width="15%" style='color:#a0a5b5; font-family: monospace; padding: 6px 4px; text-align: left;'>🕒 {r['timestamp']}</td>
-            <td width="15%" style='color:#ffffff; font-weight:bold; font-family: monospace; padding: 6px 4px; text-align: left;'>🚨 SPIKE</td>
-            <td width="30%" style='color:#ff9f43; font-weight:900; font-family: monospace; padding: 6px 4px; text-align: left;'>{formatted_symbol}</td>
-            <td width="15%" style='color:#ffffff; font-family: monospace; padding: 6px 4px; text-align: left;'>Vol: {vol_amt:,}</td>
-            <td width="15%" style='color:{badge_color}; font-weight:bold; font-family: monospace; padding: 6px 4px; text-align: left;'>{surge_val}</td>
-            <td width="10%" style='color:#ffffff; font-weight:bold; font-family: monospace; padding: 6px 4px; text-align: left;'>LTP: {round(float(r.get('ltp', 0.0)), 1)}</td>
-        </tr>"""
+        <div class="ticker-row" style="background-color: {bg_row_effect}; border-left: 3px solid {badge_color};">
+            <div class="col-left">
+                <span class="symbol-txt">{formatted_symbol}</span>
+                <span class="meta-txt">🕒 {r['timestamp']} | 🚨 INSTANT SPIKE</span>
+            </div>
+            <div class="col-right">
+                <span style="color: {badge_color}; font-weight: bold;">{r['delta']}</span>
+                <span class="vol-txt">V: {vol_amt:,}</span>
+                <span class="meta-txt">LTP: {round(float(r.get('ltp', 0.0)), 1)}</span>
+            </div>
+        </div>"""
         
-    table_html = f"""
+    final_html = f"""
     <html><head><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'></head>
     <body style='background-color: #0b0c10; padding:0; margin:0; overflow-x:hidden;'>
-    <table class='table table-dark table-borderless m-0' style='width: 100%; table-layout: fixed;'>
-        <tbody>{rows_html}</tbody>
-    </table></body></html>
+        <div style="display: flex; flex-direction: column; gap: 4px; padding: 2px;">{rows_html}</div>
+    </body></html>
     """
-    components.html(table_html, height=200, scrolling=True)
+    components.html(final_html, height=240, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN DISPLAY MATRIX DISPATCHER
+# RENDER MULTI-TAB WORKSPACE DISPATCHER
 # -----------------------------------------------------------------------------
-# SECTION 1: EQUITY INDICES
-st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
-idx_col1, idx_col2 = st.columns(2)
-with idx_col1:
-    st.markdown("<div class='asset-title-banner'>🦅 NIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
-    render_terminal_log_block("NIFTY", all_df)
-with idx_col2:
-    st.markdown("<div class='asset-title-banner'>🦅 BANKNIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
-    render_terminal_log_block("BANKNIFTY", all_df)
-    
-# SECTION 2: MCX COMMODITIES
-st.markdown("<div class='section-header commodity'>🌙 MCX METALS & COMMODITIES MULTI-GRID</div>", unsafe_allow_html=True)
-c_col1, c_col2, c_col3, c_col4 = st.columns(4)
-with c_col1:
-    st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 CRUDEOIL</div>", unsafe_allow_html=True)
-    render_terminal_log_block("CRUDEOIL", all_df)
-with c_col2:
-    st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 NATURALGAS</div>", unsafe_allow_html=True)
-    render_terminal_log_block("NATURALGAS", all_df)
-with c_col3:
-    st.markdown("<div class='asset-title-banner' style='color:#ffea00;'>🔥 GOLD</div>", unsafe_allow_html=True)
-    render_terminal_log_block("GOLD", all_df)
-with c_col4:
-    st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
-    render_terminal_log_block("SILVER", all_df)
+tab1, tab2, tab3 = st.tabs([
+    "📈 Equity Indices (NIFTY / BANKNIFTY / SENSEX)", 
+    "📊 Nifty 50 Stock Options Heavyweights", 
+    "🔥 Commodities Options & Futures (MCX)"
+])
 
-# Continuous smooth interface ticking loop interval pass
+# --- TAB 1: INDICES ---
+with tab1:
+    st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
+    idx_col1, idx_col2, idx_col3 = st.columns(3)
+    with idx_col1:
+        st.markdown("<div class='asset-title-banner'>🦅 NIFTY</div>", unsafe_allow_html=True)
+        render_terminal_log_block("NIFTY", all_df)
+    with idx_col2:
+        st.markdown("<div class='asset-title-banner'>🦅 BANKNIFTY</div>", unsafe_allow_html=True)
+        render_terminal_log_block("BANKNIFTY", all_df)
+    with idx_col3:
+        st.markdown("<div class='asset-title-banner'>🦅 SENSEX</div>", unsafe_allow_html=True)
+        render_terminal_log_block("SENSEX", all_df)
+
+# --- TAB 2: STOCK OPTIONS ---
+with tab2:
+    st.markdown("<div class='section-header stocks'>📊 HIGH-VOLUME EQUITY STOCK WHALES</div>", unsafe_allow_html=True)
+    st_col1, st_col2, st_col3, st_col4, st_col5 = st.columns(5)
+    with st_col1:
+        st.markdown("<div class='asset-title-banner' style='color:#7c4dff;'>💎 RELIANCE</div>", unsafe_allow_html=True)
+        render_terminal_log_block("RELIANCE", all_df)
+    with st_col2:
+        st.markdown("<div class='asset-title-banner' style='color:#7c4dff;'>💎 HDFCBANK</div>", unsafe_allow_html=True)
+        render_terminal_log_block("HDFCBANK", all_df)
+    with st_col3:
+        st.markdown("<div class='asset-title-banner' style='color:#7c4dff;'>💎 ICICIBANK</div>", unsafe_allow_html=True)
+        render_terminal_log_block("ICICIBANK", all_df)
+    with st_col4:
+        st.markdown("<div class='asset-title-banner' style='color:#7c4dff;'>💎 TCS</div>", unsafe_allow_html=True)
+        render_terminal_log_block("TCS", all_df)
+    with st_col5:
+        st.markdown("<div class='asset-title-banner' style='color:#7c4dff;'>💎 INFY</div>", unsafe_allow_html=True)
+        render_terminal_log_block("INFY", all_df)
+
+# --- TAB 3: COMMODITIES ---
+with tab3:
+    st.markdown("<div class='section-header commodity'>🌙 MCX METALS & COMMODITIES SWEEPS</div>", unsafe_allow_html=True)
+    c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+    with c_col1:
+        st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 CRUDEOIL</div>", unsafe_allow_html=True)
+        render_terminal_log_block("CRUDEOIL", all_df)
+    with c_col2:
+        st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 NATURALGAS</div>", unsafe_allow_html=True)
+        render_terminal_log_block("NATURALGAS", all_df)
+    with c_col3:
+        st.markdown("<div class='asset-title-banner' style='color:#ffea00;'>🔥 GOLD</div>", unsafe_allow_html=True)
+        render_terminal_log_block("GOLD", all_df)
+    with c_col4:
+        st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
+        render_terminal_log_block("SILVER", all_df)
+
+# Soft automatic page sync trigger (3 seconds cadence check)
 st.components.v1.html(
     "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
     height=0, width=0
