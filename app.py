@@ -64,17 +64,21 @@ def initialize_broker_connection():
 api_client = initialize_broker_connection()
 
 # -----------------------------------------------------------------------------
-# HIGH-VOLUME EXCHANGE TOKENS MATRIX
+# HIGH-VOLUME EXCHANGE TOKENS MATRIX (RESTORED COMMODITIES)
 # -----------------------------------------------------------------------------
 LIVE_TOKENS = {
     # Equity Cash Tickers (Segment: NSE)
-    "115":   {"symbol": "RELIANCE",  "type": "STOCK", "segment": "NSE", "step": 20},
-    "1333":  {"symbol": "HDFCBANK",  "type": "STOCK", "segment": "NSE", "step": 10},
-    "11536": {"symbol": "TCS",       "type": "STOCK", "segment": "NSE", "step": 50},
+    "115":   {"symbol": "RELIANCE",  "type": "STOCK",     "segment": "NSE", "step": 20},
+    "1333":  {"symbol": "HDFCBANK",  "type": "STOCK",     "segment": "NSE", "step": 10},
+    "11536": {"symbol": "TCS",       "type": "STOCK",     "segment": "NSE", "step": 50},
     
     # Active Front-Month Index Derivative Proxies (Segment: NFO)
-    "35000": {"symbol": "NIFTY",      "type": "INDEX", "segment": "NFO", "step": 50},
-    "35001": {"symbol": "BANKNIFTY",  "type": "INDEX", "segment": "NFO", "step": 100}
+    "35000": {"symbol": "NIFTY",      "type": "INDEX",     "segment": "NFO", "step": 50},
+    "35001": {"symbol": "BANKNIFTY",  "type": "INDEX",     "segment": "NFO", "step": 100},
+    
+    # Commodity Derivatives Tickers (Segment: MCX)
+    "252520": {"symbol": "CRUDEOIL", "type": "COMMODITY",  "segment": "MCX", "step": 100},
+    "253500": {"symbol": "GOLD",     "type": "COMMODITY",  "segment": "MCX", "step": 100}
 }
 
 def capture_live_ticks():
@@ -84,43 +88,45 @@ def capture_live_ticks():
     if api_client:
         for token_id, meta in LIVE_TOKENS.items():
             try:
-                # FIXED: Case-sensitive uppercase parameters format (NSE / NFO)
                 instruments = [{"instrument_token": str(token_id), "exchange_segment": meta["segment"]}]
                 quote = api_client.get_live_quotes(instruments)
                 
                 if quote and isinstance(quote, list):
                     data = quote[0]
-                    # Dynamic standard tracking parameters fallback resolution fields
                     ltp = float(data.get('last_traded_price', data.get('ltp', 0.0)))
                     vol = int(data.get('volume', data.get('v', 0)))
                     
                     if ltp > 0:
                         strike = int(round(ltp / meta["step"]) * meta["step"])
+                        expiry_lbl = "16JUN26" if meta["symbol"] == "CRUDEOIL" else "25JUN26"
+                        
                         st.session_state["terminal_stream_buffer"].insert(0, {
                             "timestamp": ts_string, "asset": meta["symbol"], "market_type": meta["type"],
-                            "expiry": "25JUN26", "strike": strike, "type": "CE", "direction": "🟢 BULLISH",
+                            "expiry": expiry_lbl, "strike": strike, "type": "CE", "direction": "🟢 BULLISH",
                             "volume": vol if vol > 0 else 32000, "ltp": ltp, "delta": "+610.4%"
                         })
             except:
                 pass
     else:
-        # HIGH-FIDELITY SIMULATION COMPONENT FALLBACK (Active when outside trading hours)
+        # HIGH-FIDELITY SIMULATION COMPONENT FALLBACK (Runs outside trading session windows)
         for token_id, meta in LIVE_TOKENS.items():
             if random.random() > 0.4:  
-                base_spots = {"NIFTY": 23360, "BANKNIFTY": 50420, "RELIANCE": 2945, "HDFCBANK": 1610, "TCS": 3840}
+                base_spots = {"NIFTY": 23360, "BANKNIFTY": 50420, "RELIANCE": 2945, "HDFCBANK": 1610, "TCS": 3840, "CRUDEOIL": 6520, "GOLD": 72680}
                 spot = base_spots.get(meta["symbol"], 1000)
-                ltp = round(spot + random.uniform(-10, 10), 1)
+                ltp = round(spot + random.uniform(-10, 10), 1) if meta["symbol"] != "GOLD" else round(spot + random.uniform(-150, 150), 1)
                 strike = int(round(ltp / meta["step"]) * meta["step"])
-                vol = random.randint(22000, 95000)
+                vol = random.randint(12000, 45000) if meta["type"] == "COMMODITY" else random.randint(22000, 95000)
+                
+                expiry_lbl = "16JUN26" if meta["symbol"] == "CRUDEOIL" else "25JUN26"
                 
                 st.session_state["terminal_stream_buffer"].insert(0, {
                     "timestamp": ts_string, "asset": meta["symbol"], "market_type": meta["type"],
-                    "expiry": "25JUN26", "strike": strike, "type": random.choice(["CE", "PE"]),
+                    "expiry": expiry_lbl, "strike": strike, "type": random.choice(["CE", "PE"]),
                     "direction": "🟢 BULLISH" if random.random() > 0.5 else "🔴 BEARISH",
                     "volume": vol, "ltp": ltp, "delta": f"+{round(random.uniform(400, 1200), 1)}%"
                 })
 
-    st.session_state["terminal_stream_buffer"] = st.session_state["terminal_stream_buffer"][:80]
+    st.session_state["terminal_stream_buffer"] = st.session_state["terminal_stream_buffer"][:100]
 
 capture_live_ticks()
 all_df = pd.DataFrame(st.session_state["terminal_stream_buffer"])
@@ -143,7 +149,8 @@ def render_terminal_log_block(asset_filter, df_source):
         **{formatted_symbol}** Bias: {r['direction']} | Surge: **{r['delta']}** Vol: {int(r['volume']):,} | LTP: ₹{r['ltp']} | 🕒 {r['timestamp']}
         """)
 
-tab1, tab2 = st.tabs(["📈 Equity Indices", "📊 Nifty 50 Stock Options"])
+# RESTORED: Expanded layout matrices tabs
+tab1, tab2, tab3 = st.tabs(["📈 Equity Indices", "📊 Nifty 50 Stock Options", "🛢️ MCX Commodities"])
 
 with tab1:
     st.markdown("#### ⚡ NATIONAL EXCHANGE EQUITY INDICES")
@@ -167,6 +174,16 @@ with tab2:
     with st_col3:
         st.warning("💎 TCS")
         render_terminal_log_block("TCS", all_df)
+
+with tab3:
+    st.markdown("#### 🛢️ MULTI-COMMODITY EXCHANGE ACTIVE WHALES")
+    cmd_col1, cmd_col2 = st.columns(2)
+    with cmd_col1:
+        st.success("🔥 CRUDEOIL")
+        render_terminal_log_block("CRUDEOIL", all_df)
+    with cmd_col2:
+        st.success("✨ GOLD")
+        render_terminal_log_block("GOLD", all_df)
 
 # Auto refresh page content loop frame interval
 st.components.v1.html(
