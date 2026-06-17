@@ -18,22 +18,23 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | Real-Time Live Cloud Data Stream")
+st.caption("Cross-Asset Order Book Feed Engine | Live Decentralized Cloud Gateway Sync")
 
-# Stable public JSON data pipeline endpoint link node
-PUBLIC_JSON_LINK = "https://api.jsonbin.io/v3/b/66704944ad19ca34f87b322a/latest"
+# Dedicated CORS-free public cloud database link node
+DECENTRALIZED_GATEWAY_URL = "https://66708b760900b5f8724b0716.mockapi.io/terminal/matrix/1"
 
 def load_live_spikes_from_cloud():
     try:
-        # Pull latest rows out of public cloud json array structure
-        response = requests.get(PUBLIC_JSON_LINK, headers={"X-Bin-Meta": "false"}, timeout=4)
+        # Backend python server fetch resolves all browser origin cross-site execution blockades
+        response = requests.get(DECENTRALIZED_GATEWAY_URL, timeout=5)
         if response.status_code == 200:
-            data_payload = response.json()
-            if isinstance(data_payload, list):
-                return pd.DataFrame(data_payload)
-            elif isinstance(data_payload, dict) and "record" in data_payload:
-                return pd.DataFrame(data_payload["record"])
-    except:
+            cloud_record = response.json()
+            if "payload" in cloud_record:
+                # Parse out raw text serialization string cleanly back to dataframe matrix lines
+                import json
+                parsed_list = json.loads(cloud_record["payload"])
+                return pd.DataFrame(parsed_list)
+    except Exception as e:
         pass
     return pd.DataFrame()
 
@@ -42,7 +43,7 @@ def load_live_spikes_from_cloud():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Connecting to global matrix cloud data feed...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Re-connecting to network cloud gateway node...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
@@ -84,7 +85,7 @@ def render_terminal_log_block(asset_filter, df_source):
     components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN DISPLAY COMPASS
+# MAIN DISPLAY MATRIX
 # -----------------------------------------------------------------------------
 all_df = load_live_spikes_from_cloud()
 
@@ -114,7 +115,7 @@ with c_col4:
     st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
     render_terminal_log_block("SILVER", all_df)
 
-# Auto-refresh page heartbeat (Checks cloud data link every 3 seconds)
+# Page heartbeat execution pass (refreshes interface data maps every 3 seconds)
 st.components.v1.html(
     "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
     height=0, width=0
