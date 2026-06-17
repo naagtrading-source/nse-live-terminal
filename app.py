@@ -54,17 +54,40 @@ def get_session():
         api = NeoAPI(environment="prod", consumer_key=ck)
         logs.append(f"NeoAPI created")
 
-        # Suppress any internal st calls AND capture return value
-        captured = {}
+        # The SDK imports streamlit internally as its own reference.
+        # We must patch it inside the SDK's own module namespace.
+        import neo_api_client
+        import neo_api_client.neo_api_client as neo_mod
         dummy = mock.MagicMock()
 
-        with mock.patch("streamlit.success", dummy), \
-             mock.patch("streamlit.error",   dummy), \
-             mock.patch("streamlit.warning", dummy), \
-             mock.patch("streamlit.info",    dummy), \
-             mock.patch("streamlit.write",   dummy), \
-             mock.patch("streamlit.markdown",dummy):
+        # Find all submodules that may call st
+        import sys
+        neo_modules = {k: v for k, v in sys.modules.items()
+                       if k.startswith("neo_api_client") and hasattr(v, "__dict__")}
+        logs.append(f"neo modules: {list(neo_modules.keys())}")
+
+        patches = []
+        for mod_name, mod in neo_modules.items():
+            if hasattr(mod, "st"):
+                patches.append(mock.patch.object(mod, "st", dummy))
+                logs.append(f"patching st in {mod_name}")
+            # Also patch individual st functions if imported directly
+            for fn in ("success","error","warning","info","write","markdown","spinner"):
+                if hasattr(mod, fn):
+                    patches.append(mock.patch.object(mod, fn, dummy))
+                    logs.append(f"patching {fn} in {mod_name}")
+
+        # Apply all patches
+        for p in patches:
+            try: p.start()
+            except: pass
+
+        try:
             r1 = api.totp_login(mobile_number=mob, ucc=ucc, totp=totp)
+        finally:
+            for p in patches:
+                try: p.stop()
+                except: pass
 
         logs.append(f"totp_login type={type(r1).__name__}")
         logs.append(f"totp_login repr={str(r1)[:300]}")
@@ -92,13 +115,26 @@ def get_session():
         except: pass
 
         # Now call totp_validate — SDK handles Auth/Sid internally after login
-        with mock.patch("streamlit.success", dummy), \
-             mock.patch("streamlit.error",   dummy), \
-             mock.patch("streamlit.warning", dummy), \
-             mock.patch("streamlit.info",    dummy), \
-             mock.patch("streamlit.write",   dummy), \
-             mock.patch("streamlit.markdown",dummy):
+        # Re-apply patches for validate call
+        patches2 = []
+        neo_modules2 = {k: v for k, v in sys.modules.items()
+                        if k.startswith("neo_api_client") and hasattr(v, "__dict__")}
+        for mod_name, mod in neo_modules2.items():
+            if hasattr(mod, "st"):
+                patches2.append(mock.patch.object(mod, "st", dummy))
+            for fn in ("success","error","warning","info","write","markdown","spinner"):
+                if hasattr(mod, fn):
+                    patches2.append(mock.patch.object(mod, fn, dummy))
+
+        for p in patches2:
+            try: p.start()
+            except: pass
+        try:
             r2 = api.totp_validate(mpin=mpin)
+        finally:
+            for p in patches2:
+                try: p.stop()
+                except: pass
 
         logs.append(f"totp_validate type={type(r2).__name__}")
         logs.append(f"totp_validate repr={str(r2)[:300]}")
@@ -143,17 +179,34 @@ with st.expander("🔧 Diagnostic", expanded=(s_status != "OK")):
 
 # ── SCRIP — cached 1 h ───────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
+def _neo_patches():
+    import sys, unittest.mock as mock
+    dummy = mock.MagicMock()
+    patches = []
+    for k, v in sys.modules.items():
+        if k.startswith("neo_api_client") and hasattr(v, "__dict__"):
+            if hasattr(v, "st"):
+                patches.append(mock.patch.object(v, "st", dummy))
+            for fn in ("success","error","warning","info","write","markdown","spinner"):
+                if hasattr(v, fn):
+                    patches.append(mock.patch.object(v, fn, dummy))
+    return patches
+
+def _run_patched(fn):
+    patches = _neo_patches()
+    for p in patches:
+        try: p.start()
+        except: pass
+    try:    return fn()
+    finally:
+        for p in patches:
+            try: p.stop()
+            except: pass
+
 def get_scrip(seg, symbol):
     if api is None or s_status != "OK": return []
-    import unittest.mock as mock
-    dummy = mock.MagicMock()
     try:
-        with mock.patch("streamlit.success", dummy), \
-             mock.patch("streamlit.error",   dummy), \
-             mock.patch("streamlit.warning", dummy), \
-             mock.patch("streamlit.info",    dummy), \
-             mock.patch("streamlit.write",   dummy):
-            r = api.search_scrip(exchange_segment=seg, symbol=symbol)
+        r = _run_patched(lambda: api.search_scrip(exchange_segment=seg, symbol=symbol))
         if isinstance(r, dict): return r.get("data",[]) or r.get("result",[]) or []
         return r if isinstance(r,list) else []
     except Exception: return []
@@ -161,15 +214,8 @@ def get_scrip(seg, symbol):
 # ── QUOTE ────────────────────────────────────────────────────────────────────
 def get_quote(token, seg):
     if api is None: return {}
-    import unittest.mock as mock
-    dummy = mock.MagicMock()
     try:
-        with mock.patch("streamlit.success", dummy), \
-             mock.patch("streamlit.error",   dummy), \
-             mock.patch("streamlit.warning", dummy), \
-             mock.patch("streamlit.info",    dummy), \
-             mock.patch("streamlit.write",   dummy):
-            q = api.get_live_quotes([{"instrument_token": str(token), "exchange_segment": seg}])
+        q = _run_patched(lambda: api.get_live_quotes([{"instrument_token": str(token), "exchange_segment": seg}]))
         if isinstance(q,list) and q: return q[0]
         if isinstance(q,dict):
             d=q.get("data",[])
