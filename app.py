@@ -85,7 +85,7 @@ def load_live_spikes_from_db():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live {asset_filter} updates from Colab script...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live {asset_filter} updates...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
@@ -153,4 +153,10 @@ def render_unified_dashboard_grid():
         st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 NATURALGAS</div>", unsafe_allow_html=True)
         render_terminal_log_block("NATURALGAS", all_df)
     with c_col3:
-        st.markdown("<div class='asset-title-banner' style='color:#ffea0
+        st.markdown("<div class='asset-title-banner' style='color:#ffea00;'>🔥 GOLD</div>", unsafe_allow_html=True)
+        render_terminal_log_block("GOLD", all_df)
+    with c_col4:
+        st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
+        render_terminal_log_block("SILVER", all_df)
+
+render_unified_dashboard_grid()
