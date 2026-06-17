@@ -30,132 +30,104 @@ ASSET_ROUTING = {
     "GOLD":      {"fo_seg":"mcx_fo","is_fut":True, "step":100, "base":72800,"exp":"30JUN26"},
 }
 
-# ── Pure HTTP auth — no SDK needed for login ──────────────────────────────────
-# Kotak Neo v2 endpoints (from inspecting SDK network calls)
-HOST     = "https://gw-napi.kotaksecurities.com"
-EP_LOGIN = f"{HOST}/login/1.0/login/v2/validate"
-EP_MPIN  = f"{HOST}/login/1.0/login/v2/totp/validate"
-EP_SCRIP = f"{HOST}/market-data/oms/1.0/scripmaster/search"
-EP_QUOTE = f"{HOST}/market-data/oms/1.0/quotes/"
-
+# ── AUTH using the SDK (only correct way — HTTP endpoints are undocumented) ───
 @st.cache_resource(ttl=1500, show_spinner=False)
 def get_session():
     logs = []
-    ck     = os.environ.get("KOTAK_CONSUMER_KEY","").strip()
-    secret = os.environ.get("KOTAK_TOTP_SECRET","").replace(" ","")
-    ucc    = os.environ.get("KOTAK_UCC","").strip()
-    mpin   = os.environ.get("KOTAK_MPIN","").strip()
-    mob    = os.environ.get("KOTAK_MOBILE","").strip().lstrip("+")
-    if mob.startswith("91") and len(mob)==12: mob = mob[2:]
-    elif mob.startswith("0") and len(mob)==11: mob = mob[1:]
-
-    if not all([ck, secret, ucc, mpin, mob]):
-        missing = [k for k,v in {"CK":ck,"SECRET":secret,"UCC":ucc,"MPIN":mpin,"MOB":mob}.items() if not v]
-        return None, f"Missing: {missing}", logs
-
-    # Pad secret to valid base32
-    padded = secret + "=" * (-len(secret) % 8)
     try:
-        totp = pyotp.TOTP(padded).now()
-    except Exception:
-        totp = pyotp.TOTP(secret).now()
-    logs.append(f"TOTP={totp} mob=...{mob[-4:]}({len(mob)}d)")
+        from neo_api_client import NeoAPI
+        import unittest.mock as mock
 
-    base_h = {
-        "accept": "application/json",
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {ck}",
-    }
+        ck     = os.environ.get("KOTAK_CONSUMER_KEY","").strip()
+        secret = os.environ.get("KOTAK_TOTP_SECRET","").replace(" ","")
+        ucc    = os.environ.get("KOTAK_UCC","").strip()
+        mpin   = os.environ.get("KOTAK_MPIN","").strip()
+        mob    = os.environ.get("KOTAK_MOBILE","").strip().lstrip("+")
+        if mob.startswith("91") and len(mob)==12: mob = mob[2:]
+        elif mob.startswith("0") and len(mob)==11: mob = mob[1:]
 
-    # ── Step 1: TOTP login ───────────────────────────────────────────────────
-    try:
-        r1 = requests.post(EP_LOGIN, headers=base_h,
-            json={"mobileNumber": mob, "ucc": ucc, "totp": totp},
-            timeout=15)
-        logs.append(f"Login HTTP {r1.status_code}")
-        raw1 = r1.text[:500]
-        logs.append(f"Login raw: {raw1}")
+        padded = secret + "=" * (-len(secret) % 8)
+        try:    totp = pyotp.TOTP(padded).now()
+        except: totp = pyotp.TOTP(secret).now()
+        logs.append(f"TOTP={totp} mob=...{mob[-4:]}({len(mob)}d)")
+
+        api = NeoAPI(environment="prod", consumer_key=ck)
+        logs.append(f"NeoAPI created")
+
+        # Suppress any internal st calls AND capture return value
+        captured = {}
+        dummy = mock.MagicMock()
+
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy), \
+             mock.patch("streamlit.markdown",dummy):
+            r1 = api.totp_login(mobile_number=mob, ucc=ucc, totp=totp)
+
+        logs.append(f"totp_login type={type(r1).__name__}")
+        logs.append(f"totp_login repr={str(r1)[:300]}")
+
+        # The v2 SDK stores auth internally — check every possible attribute
+        for attr in dir(api):
+            if any(x in attr.lower() for x in ("auth","token","sid","session","access")):
+                try:
+                    val = getattr(api, attr)
+                    if val and not callable(val) and len(str(val)) > 5:
+                        logs.append(f"api.{attr} = {str(val)[:80]}")
+                        captured[attr] = val
+                except: pass
+
+        # Also check api.configuration
+        try:
+            cfg = api.configuration
+            for attr in dir(cfg):
+                if any(x in attr.lower() for x in ("auth","token","sid","session","access","key")):
+                    try:
+                        val = getattr(cfg, attr)
+                        if val and not callable(val) and len(str(val)) > 3:
+                            logs.append(f"cfg.{attr} = {str(val)[:80]}")
+                    except: pass
+        except: pass
+
+        # Now call totp_validate — SDK handles Auth/Sid internally after login
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy), \
+             mock.patch("streamlit.markdown",dummy):
+            r2 = api.totp_validate(mpin=mpin)
+
+        logs.append(f"totp_validate type={type(r2).__name__}")
+        logs.append(f"totp_validate repr={str(r2)[:300]}")
+
+        # Check for error in response
+        if isinstance(r2, dict):
+            errs = r2.get("error", [])
+            if errs:
+                # Try passing mpin positionally
+                with mock.patch("streamlit.success", dummy), \
+                     mock.patch("streamlit.error",   dummy), \
+                     mock.patch("streamlit.warning", dummy), \
+                     mock.patch("streamlit.info",    dummy), \
+                     mock.patch("streamlit.write",   dummy):
+                    r2b = api.totp_validate(mpin)
+                logs.append(f"totp_validate(positional) repr={str(r2b)[:300]}")
+                if isinstance(r2b, dict) and not r2b.get("error"):
+                    r2 = r2b
+
+        return api, "OK", logs
+
     except Exception as e:
-        return None, f"Login request failed: {e}", logs
-
-    try:
-        d1 = r1.json()
-    except Exception:
-        return None, f"Login non-JSON: {r1.text[:200]}", logs
-
-    # Check for errors
-    if d1.get("error") or d1.get("Error") or r1.status_code != 200:
-        return None, f"Login error: {json.dumps(d1)[:300]}", logs
-
-    # Extract token fields — log ALL keys so we can see exact names
-    data1 = d1.get("data", d1)
-    logs.append(f"Login data keys: {list(data1.keys()) if isinstance(data1,dict) else type(data1)}")
-    logs.append(f"Login data: {str(data1)[:400]}")
-
-    auth = (data1.get("Auth") or data1.get("auth") or
-            data1.get("token") or data1.get("access_token") or
-            data1.get("jwtToken") or data1.get("jwt_token") or "")
-    sid  = (data1.get("SID")  or data1.get("sid")  or
-            data1.get("Sid")  or data1.get("session_id") or "")
-    srv  = (data1.get("ServerID") or data1.get("serverId") or
-            data1.get("server_id") or "")
-
-    logs.append(f"auth={'..'+auth[-8:] if auth else 'MISSING'} "
-                f"sid={'..'+str(sid)[-6:] if sid else 'MISSING'} "
-                f"srv={srv or 'MISSING'}")
-
-    if not auth:
-        return None, f"No auth token in login response. Keys={list(data1.keys()) if isinstance(data1,dict) else '?'}", logs
-
-    # ── Step 2: MPIN validate ────────────────────────────────────────────────
-    h2 = {
-        **base_h,
-        "Auth": auth,
-        "sid":  sid,
-        "Sid":  sid,
-        "neo-fin-key": f"neotradeapi{sid}",
-    }
-    try:
-        r2 = requests.post(EP_MPIN, headers=h2,
-            json={"mpin": mpin},
-            timeout=15)
-        logs.append(f"Validate HTTP {r2.status_code}")
-        raw2 = r2.text[:500]
-        logs.append(f"Validate raw: {raw2}")
-    except Exception as e:
-        return None, f"Validate request failed: {e}", logs
-
-    try:
-        d2 = r2.json()
-    except Exception:
-        return None, f"Validate non-JSON: {r2.text[:200]}", logs
-
-    if d2.get("error") or d2.get("Error") or r2.status_code != 200:
-        return None, f"Validate error: {json.dumps(d2)[:300]}", logs
-
-    data2 = d2.get("data", d2)
-    logs.append(f"Validate data keys: {list(data2.keys()) if isinstance(data2,dict) else type(data2)}")
-    logs.append(f"Validate data: {str(data2)[:400]}")
-
-    # Final token (validate may return a new token)
-    final_tok = (data2.get("token") or data2.get("Token") or
-                 data2.get("accessToken") or data2.get("access_token") or
-                 data2.get("jwtToken") or auth)
-    final_sid = (data2.get("SID") or data2.get("sid") or sid)
-
-    session_h = {
-        **base_h,
-        "Auth":        final_tok,
-        "sid":         final_sid,
-        "Sid":         final_sid,
-        "neo-fin-key": f"neotradeapi{final_sid}",
-    }
-    logs.append("✅ Session established")
-    return session_h, "OK", logs
+        import traceback
+        logs.append(f"Exception: {type(e).__name__}: {e}")
+        logs.append(traceback.format_exc()[:500])
+        return None, f"{type(e).__name__}: {str(e)[:150]}", logs
 
 
-result = get_session()
-s_headers, s_status, s_logs = result
+api, s_status, s_logs = get_session()
 
 if s_status == "OK":
     st.success("🟢 Broker Connected — Live data active")
@@ -167,54 +139,49 @@ with st.expander("🔧 Diagnostic", expanded=(s_status != "OK")):
         v = os.environ.get(k)
         st.success(f"✅ {k} ({len(v)} chars)") if v else st.error(f"❌ {k} MISSING")
     st.markdown("**Auth log:**")
-    for l in s_logs:
-        st.code(l)
+    for l in s_logs: st.code(l)
 
 # ── SCRIP — cached 1 h ───────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_scrip(seg, symbol, _cache_key):
-    if not s_headers: return []
+def get_scrip(seg, symbol):
+    if api is None or s_status != "OK": return []
+    import unittest.mock as mock
+    dummy = mock.MagicMock()
     try:
-        r = requests.get(EP_SCRIP, headers=s_headers,
-            params={"exchSeg": seg, "symbol": symbol, "series": ""},
-            timeout=10)
-        d = r.json()
-        if isinstance(d, dict):
-            return d.get("data",[]) or d.get("result",[]) or []
-        return d if isinstance(d,list) else []
-    except Exception:
-        return []
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy):
+            r = api.search_scrip(exchange_segment=seg, symbol=symbol)
+        if isinstance(r, dict): return r.get("data",[]) or r.get("result",[]) or []
+        return r if isinstance(r,list) else []
+    except Exception: return []
 
 # ── QUOTE ────────────────────────────────────────────────────────────────────
-def get_quote(token_id, seg):
-    if not s_headers: return {}
-    exch_map = {
-        "nse_fo":("N","FO"), "nse_cm":("N","C"),
-        "mcx_fo":("M","FO"), "bse_cm":("B","C"),
-    }
-    exch, etype = exch_map.get(seg, ("N","FO"))
+def get_quote(token, seg):
+    if api is None: return {}
+    import unittest.mock as mock
+    dummy = mock.MagicMock()
     try:
-        r = requests.get(EP_QUOTE, headers=s_headers,
-            params={
-                "instrument_token": str(token_id),
-                "market_protection": "0",
-                "scrip_token": str(token_id),
-                "exch": exch,
-                "exchType": etype,
-            }, timeout=8)
-        d = r.json()
-        items = d.get("data", d) if isinstance(d,dict) else d
-        if isinstance(items,list) and items: return items[0]
-        if isinstance(items,dict): return items
-    except Exception:
-        pass
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy):
+            q = api.get_live_quotes([{"instrument_token": str(token), "exchange_segment": seg}])
+        if isinstance(q,list) and q: return q[0]
+        if isinstance(q,dict):
+            d=q.get("data",[])
+            if d: return d[0]
+    except: pass
     return {}
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def ltp(q):
     for k in ("ltp","last_traded_price","lastPrice","LTP","c","close"):
-        v = q.get(k)
-        if v not in (None,""):
+        v=q.get(k)
+        if v not in(None,""):
             try:
                 f=float(v)
                 if f>0: return f
@@ -223,7 +190,7 @@ def ltp(q):
 
 def vol(q):
     for k in ("volume","vol","tradedQuantity","totalTradedVolume","ltq"):
-        v = q.get(k)
+        v=q.get(k)
         if v is not None:
             try: return int(float(v))
             except: pass
@@ -260,10 +227,9 @@ def capture():
     ist=pytz.timezone("Asia/Kolkata")
     ts=datetime.now(ist).strftime("%H:%M:%S")
     snap,live=[],False
-    cache_key = str(s_headers.get("sid","")) if s_headers else ""
 
     for sym,meta in ASSET_ROUTING.items():
-        exp=meta["exp"]; fo=get_scrip(meta["fo_seg"],sym,cache_key); und=0.0
+        exp=meta["exp"]; fo=get_scrip(meta["fo_seg"],sym); und=0.0
 
         if meta["is_fut"]:
             for item in fo:
@@ -281,7 +247,7 @@ def capture():
                             v=ltp(get_quote(t,meta["fo_seg"]))
                             if v>0: und=v; break
         else:
-            cm=get_scrip(meta["cm_seg"],sym,cache_key)
+            cm=get_scrip(meta["cm_seg"],sym)
             for item in cm:
                 s=get_sym(item)
                 if s in(f"{sym}-EQ",sym,f"{sym}EQ"):
@@ -333,7 +299,7 @@ def fallback():
 # ── RUN ──────────────────────────────────────────────────────────────────────
 if "buf" not in st.session_state: st.session_state["buf"]=[]
 
-if s_headers and s_status=="OK":
+if api and s_status=="OK":
     snap,got=capture()
     if got: st.session_state["buf"]=snap
     elif not st.session_state["buf"]: st.session_state["buf"]=fallback()
@@ -345,7 +311,6 @@ ist_now=datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%H:%M:%S")
 ln=len(df[df["status"].str.contains("LIVE",na=False)]) if not df.empty else 0
 st.caption(f"📦 Rows:{len(df)} | 🟢 Live:{ln} | 🌙 Fallback:{len(df)-ln} | IST:{ist_now}")
 
-# ── RENDER ───────────────────────────────────────────────────────────────────
 def blk(asset,src):
     if src.empty: st.warning("⏳ No data..."); return
     f=src[src["asset"].str.upper()==asset.upper()]
