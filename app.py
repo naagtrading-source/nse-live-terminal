@@ -98,8 +98,7 @@ def render_instrument_block(asset_name, df_source):
             <td style='color:#ff9f43;'>{r['type']}</td>
             <td style='color: {text_color}; font-weight:bold;'>{r['quadrant']}</td>
             <td style='color:#fff;'>{int(r['volume']):,}</td>
-            <td style='color:#fff;'>{float(r['ltp']:.1f)}</td>
-        </tr>"""
+            <td>{round(float(r.get('ltp', 0.0)), 1)}</td>        </tr>"""
         
     if rows_html:
         table_html = f"""
