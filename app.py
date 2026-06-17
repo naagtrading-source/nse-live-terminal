@@ -2,11 +2,10 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import os
-import pytz
+import json
 from datetime import datetime
 import streamlit.components.v1 as components
 
-# Force wide layout immediately
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
 st.markdown("""
@@ -42,16 +41,20 @@ def init_db():
 init_db()
 
 # -----------------------------------------------------------------------------
-# HIGH-SPEED WEBHOOK INTERCEPTOR
+# DIRECT INTERNAL PIPELINE INTERCEPTOR (Bypasses URL Parameter Limits)
 # -----------------------------------------------------------------------------
-# INTERCEPT: Pull incoming query data parameters directly on runtime execution
-query_params = st.query_params
-if "webhook_receiver" in query_params:
+if "network_buffer" not in st.session_state:
+    st.session_state["network_buffer"] = []
+
+# Create a clean data capture input text area box
+raw_signal_pipe = st.text_input("Data Gateway", key="data_gateway_input", label_visibility="collapsed")
+
+if raw_signal_pipe:
     try:
-        import json
-        payload = json.loads(query_params["webhook_receiver"])
+        payload = json.loads(raw_signal_pipe)
+        st.session_state["network_buffer"].insert(0, payload)
         
-        # Write directly down to local SQLite ledger row
+        # Write down to SQLite file ledger layer immediately
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("""
@@ -62,17 +65,16 @@ if "webhook_receiver" in query_params:
               int(payload['volume']), float(payload['ltp']), payload['delta']))
         conn.commit()
         conn.close()
-        
-        # Clear params after successful consumption to prevent execution deadlocks
-        st.query_params.clear()
     except Exception as e:
         pass
 
 def load_live_spikes_from_db():
+    if st.session_state["network_buffer"]:
+        return pd.DataFrame(st.session_state["network_buffer"])
     if os.path.exists(DB_FILE):
         try:
             conn = sqlite3.connect(DB_FILE)
-            df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC LIMIT 50", conn)
+            df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC LIMIT 40", conn)
             conn.close()
             return df
         except:
@@ -84,7 +86,7 @@ def load_live_spikes_from_db():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting first network handshake packet...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Awaiting live {asset_filter} updates...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
@@ -126,7 +128,7 @@ def render_terminal_log_block(asset_filter, df_source):
     components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN DIRECT RENDER ENGINE (Bypasses fragments to process live signals)
+# MAIN VIEW DISPATCHER GRID
 # -----------------------------------------------------------------------------
 all_df = load_live_spikes_from_db()
 
@@ -156,8 +158,8 @@ with c_col4:
     st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
     render_terminal_log_block("SILVER", all_df)
 
-# Automatic 3-second direct window reload script hook
+# Soft auto-refresh hook to query memory frames
 st.components.v1.html(
-    "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
+    "<html><body><script>setTimeout(function(){window.location.reload();}, 4000);</script></body></html>",
     height=0, width=0
 )
