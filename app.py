@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 import streamlit.components.v1 as components
 
+# 🚨 Force wide layout layout matrix parameters immediately
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
 st.markdown("""
@@ -21,7 +22,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | High-Speed Live Sync")
+st.caption("Cross-Asset Order Book Feed Engine | High-Speed Live Network API Sync")
 
 DB_FILE = "terminal_history.db"
 
@@ -41,20 +42,13 @@ def init_db():
 init_db()
 
 # -----------------------------------------------------------------------------
-# DIRECT INTERNAL PIPELINE INTERCEPTOR (Bypasses URL Parameter Limits)
+# DUAL ENGINE: INTEGRATED FASTAPI LINK HANDSHAKE
 # -----------------------------------------------------------------------------
-if "network_buffer" not in st.session_state:
-    st.session_state["network_buffer"] = []
-
-# Create a clean data capture input text area box
-raw_signal_pipe = st.text_input("Data Gateway", key="data_gateway_input", label_visibility="collapsed")
-
-if raw_signal_pipe:
+# Intercept incoming direct raw URL updates sent from the requests engine
+query_params = st.query_params
+if "webhook_data" in query_params:
     try:
-        payload = json.loads(raw_signal_pipe)
-        st.session_state["network_buffer"].insert(0, payload)
-        
-        # Write down to SQLite file ledger layer immediately
+        payload = json.loads(query_params["webhook_data"])
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("""
@@ -65,15 +59,15 @@ if raw_signal_pipe:
               int(payload['volume']), float(payload['ltp']), payload['delta']))
         conn.commit()
         conn.close()
+        st.query_params.clear()  # Flush out parameter strings to prevent deadlocks
     except Exception as e:
         pass
 
 def load_live_spikes_from_db():
-    if st.session_state["network_buffer"]:
-        return pd.DataFrame(st.session_state["network_buffer"])
     if os.path.exists(DB_FILE):
         try:
             conn = sqlite3.connect(DB_FILE)
+            # Pull the latest 40 rows from the localized database ledger
             df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC LIMIT 40", conn)
             conn.close()
             return df
@@ -86,12 +80,12 @@ def load_live_spikes_from_db():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Awaiting live {asset_filter} updates...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live {asset_filter} updates from loop...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning {asset_filter} frequencies...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} order books...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
@@ -128,7 +122,7 @@ def render_terminal_log_block(asset_filter, df_source):
     components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN VIEW DISPATCHER GRID
+# MAIN DASHBOARD RENDER LAYER
 # -----------------------------------------------------------------------------
 all_df = load_live_spikes_from_db()
 
@@ -158,8 +152,8 @@ with c_col4:
     st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
     render_terminal_log_block("SILVER", all_df)
 
-# Soft auto-refresh hook to query memory frames
+# Soft auto-refresh hook to query the local SQLite engine
 st.components.v1.html(
-    "<html><body><script>setTimeout(function(){window.location.reload();}, 4000);</script></body></html>",
+    "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
     height=0, width=0
 )
