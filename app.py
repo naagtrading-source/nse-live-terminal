@@ -34,32 +34,34 @@ st.markdown("---")
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 INDICES = {
-    # Fallback base prices only — live prices fetched from API during market hours
-    "NIFTY":     {"fo_seg":"nse_fo","step":50,  "base":24400,"exp":"26JUN26","lot":75},
-    "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "base":54000,"exp":"25JUN26","lot":30},
-    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,  "base":24000,"exp":"24JUN26","lot":40},
-    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,  "base":12500,"exp":"26JUN26","lot":75},
-    "SENSEX":    {"fo_seg":"bse_fo","step":100, "base":80500,"exp":"27JUN26","lot":10},
+    # exp = substring that must appear in the trading symbol — keep short so it matches any format
+    # e.g. "JUN26" matches "NIFTY26JUN26FUT", "NIFTY2626JUN", etc.
+    "NIFTY":     {"fo_seg":"nse_fo","step":50,  "base":24400,"exp":"JUN26","lot":75},
+    "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "base":54000,"exp":"JUN26","lot":30},
+    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,  "base":24000,"exp":"JUN26","lot":40},
+    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,  "base":12500,"exp":"JUN26","lot":75},
+    "SENSEX":    {"fo_seg":"bse_fo","step":100, "base":80500,"exp":"JUN26","lot":10},
 }
 
 STOCKS = {
-    # Fallback base prices only — live prices fetched from API during market hours
-    "RELIANCE":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1450, "exp":"26JUN26","lot":250},
-    "HDFCBANK":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1950, "exp":"26JUN26","lot":550},
-    "TCS":       {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":100, "base":3600, "exp":"26JUN26","lot":175},
-    "INFY":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1650, "exp":"26JUN26","lot":400},
-    "ICICIBANK": {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1450, "exp":"26JUN26","lot":700},
-    "SBIN":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":10,  "base":840,  "exp":"26JUN26","lot":1500},
+    "RELIANCE":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1450, "exp":"JUN26","lot":250},
+    "HDFCBANK":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1950, "exp":"JUN26","lot":550},
+    "TCS":       {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":100, "base":3600, "exp":"JUN26","lot":175},
+    "INFY":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "base":1650, "exp":"JUN26","lot":400},
+    "ICICIBANK": {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "base":1450, "exp":"JUN26","lot":700},
+    "SBIN":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":10,  "base":840,  "exp":"JUN26","lot":1500},
 }
 
 COMMODITIES = {
-    # MCX prices as of Jun 2026 — used only as fallback when market is closed
-    # Live prices always fetched from API during market hours
-    "GOLD":      {"fo_seg":"mcx_fo","step":100,  "base":96000, "exp":"05AUG26","lot":100},
-    "SILVER":    {"fo_seg":"mcx_fo","step":100,  "base":93000, "exp":"05JUL26","lot":30},
-    "CRUDEOIL":  {"fo_seg":"mcx_fo","step":100,  "base":6500,  "exp":"17JUL26","lot":100},
-    "NATURALGAS":{"fo_seg":"mcx_fo","step":10,   "base":330,   "exp":"25JUL26","lot":1250},
-    "COPPER":    {"fo_seg":"mcx_fo","step":5,    "base":870,   "exp":"28JUL26","lot":2500},
+    # MCX — exp is a short substring matched against trading symbol
+    # "JUL26" matches any July 2026 contract regardless of exact date format
+    # Base prices = real MCX levels as of Jun 2026 (fallback only)
+    # GOLDM  ₹1,51,800 | SILVERM ₹90,000 | CRUDEOIL ₹7,174 | NATGAS ₹330 | COPPER ₹870
+    "GOLDM":     {"fo_seg":"mcx_fo","step":100,  "base":151800,"exp":"JUL26","lot":10},
+    "SILVERM":   {"fo_seg":"mcx_fo","step":100,  "base":90000, "exp":"JUL26","lot":5},
+    "CRUDEOIL":  {"fo_seg":"mcx_fo","step":100,  "base":7174,  "exp":"JUL26","lot":100},
+    "NATURALGAS":{"fo_seg":"mcx_fo","step":10,   "base":330,   "exp":"JUL26","lot":1250},
+    "COPPER":    {"fo_seg":"mcx_fo","step":5,    "base":870,   "exp":"JUL26","lot":2500},
 }
 
 # Volume spike threshold: flag if current vol > N× average
@@ -306,24 +308,29 @@ def scan_symbol(symbol, meta, is_index=True):
     if not fo: return results
 
     # ── Resolve underlying price ─────────────────────────────────────────────
+    # Strategy: try exp-matched FUT first, then any FUT (nearest month most liquid)
     und = 0.0
-    if is_index or meta.get("is_fut", True):
-        for item in fo:
-            s = _sym(item)
-            if "FUT" in s and _exp_match(s, exp):
-                t = _tok(item)
-                if t:
-                    v = _ltp(live_quote(t, fo_seg))
-                    if v > 0: und = v; break
-        if und <= 0:
-            for item in fo:
-                if "FUT" in _sym(item):
-                    t = _tok(item)
-                    if t:
-                        v = _ltp(live_quote(t, fo_seg))
-                        if v > 0: und = v; break
-    else:
-        cm_seg = meta.get("cm_seg","nse_cm")
+    cm_seg = meta.get("cm_seg", "nse_cm")
+
+    fut_candidates = [(item, _sym(item)) for item in fo if "FUT" in _sym(item)]
+
+    # Sort: exp-matched first, then by symbol length (shorter = near month usually)
+    def fut_priority(pair):
+        item, s = pair
+        exp_match = 1 if _exp_match(s, exp) else 0
+        return (-exp_match, len(s))
+    fut_candidates.sort(key=fut_priority)
+
+    for item, s in fut_candidates:
+        t = _tok(item)
+        if not t: continue
+        v = _ltp(live_quote(t, fo_seg))
+        if v > 0:
+            und = v
+            break
+
+    # For stocks: also try cash segment as fallback for underlying
+    if und <= 0 and cm_seg and not is_index:
         cm = scrip_list(cm_seg, symbol)
         for item in cm:
             s = _sym(item)
@@ -333,7 +340,7 @@ def scan_symbol(symbol, meta, is_index=True):
                     v = _ltp(live_quote(t, cm_seg))
                     if v > 0: und = v; break
 
-    # Use base price if live unavailable (off-hours)
+    # Final fallback: base price (used off-hours or when API fails)
     if und <= 0: und = meta["base"]
 
     atm     = int(round(und / step) * step)
@@ -577,6 +584,29 @@ with st.expander("🔧 Auth Diagnostic", expanded=(auth_status != "OK")):
         v = os.environ.get(k)
         st.success(f"✅ {k} ({len(v)} chars)") if v else st.error(f"❌ {k} MISSING")
     for l in auth_logs: st.code(l)
+    if auth_status == "OK":
+        st.markdown("**Live Symbol Verification** — FUT contracts found:")
+        checks = [
+            ("mcx_fo","GOLDM"), ("mcx_fo","CRUDEOIL"),
+            ("nse_fo","NIFTY"), ("nse_fo","BANKNIFTY"),
+        ]
+        for seg, sym in checks:
+            try:
+                recs = scrip_list(seg, sym)
+                futs = [(item, _sym(item)) for item in recs if "FUT" in _sym(item)][:3]
+                if futs:
+                    for item, s in futs:
+                        t = _tok(item)
+                        q = live_quote(t, seg) if t else {}
+                        p = _ltp(q)
+                        st.code(f"{sym}: sym={s} | LTP=₹{p} | tok={t}")
+                else:
+                    st.warning(f"{sym} on {seg}: no FUT records found")
+                    # Show first 3 raw records so we can see what's available
+                    for item in recs[:3]:
+                        st.code(f"  raw: {_sym(item)} | {item.get('pOptionType','')}")
+            except Exception as e:
+                st.error(f"{sym}: {e}")
 
 st.markdown("---")
 
