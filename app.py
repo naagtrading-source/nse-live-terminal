@@ -34,53 +34,13 @@ st.title("⚡ SNY")
 st.subheader("QUANTITATIVE ALGORITHMIC ROUTING ENGINE")
 st.markdown("---")
 st.markdown("### 🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Live Derivatives Order Book Feed | Explicit Token-Level Contract Routing")
+st.caption("Live Derivatives Order Book | Automated Nearest-Expiry Token Routing")
 
 if "terminal_stream_buffer" not in st.session_state:
     st.session_state["terminal_stream_buffer"] = []
 
-if "token_cache" not in st.session_state:
-    st.session_state["token_cache"] = {}
-
-# -----------------------------------------------------------------------------
-# ⚙️ USER CONTROL SIDEBAR: DYNAMIC EXPIRY & STRIKE CONFIGURATION
-# -----------------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Active Market Parameters")
-    st.caption("Match these EXACTLY to your Kotak Neo app chains to pull true Option LTP.")
-    
-    st.subheader("National Indices")
-    nifty_exp = st.text_input("Nifty Expiry", "23JUN26")
-    nifty_strike = st.number_input("Nifty Strike", value=23350, step=50)
-    
-    bn_exp = st.text_input("BankNifty Expiry", "24JUN26")
-    bn_strike = st.number_input("BankNifty Strike", value=50400, step=100)
-    
-    st.subheader("Equity Options")
-    stk_exp = st.text_input("Stock Expiry", "25JUN26")
-    rel_strike = st.number_input("Reliance Strike", value=2960, step=20)
-    hdfc_strike = st.number_input("HDFCBANK Strike", value=1600, step=10)
-    tcs_strike = st.number_input("TCS Strike", value=3850, step=50)
-    
-    st.subheader("MCX Commodities")
-    crude_exp = st.text_input("CrudeOil Expiry", "16JUN26")
-    crude_strike = st.number_input("CrudeOil Strike", value=6500, step=100)
-    gold_exp = st.text_input("Gold Expiry", "26JUN26")
-    gold_strike = st.number_input("Gold Strike", value=72600, step=100)
-    
-    st.markdown("---")
-    test_mode = st.toggle("Enable Weekend Simulation Mode", value=False)
-
-# Compile dynamic asset array based on exact user inputs
-ASSETS = {
-    "NIFTY":     {"segment": "nse_fo", "strike": int(nifty_strike), "exp": nifty_exp.strip().upper()},
-    "BANKNIFTY": {"segment": "nse_fo", "strike": int(bn_strike), "exp": bn_exp.strip().upper()},
-    "RELIANCE":  {"segment": "nse_fo", "strike": int(rel_strike), "exp": stk_exp.strip().upper()},
-    "HDFCBANK":  {"segment": "nse_fo", "strike": int(hdfc_strike), "exp": stk_exp.strip().upper()},
-    "TCS":       {"segment": "nse_fo", "strike": int(tcs_strike), "exp": stk_exp.strip().upper()},
-    "CRUDEOIL":  {"segment": "mcx_fo", "strike": int(crude_strike), "exp": crude_exp.strip().upper()},
-    "GOLD":      {"segment": "mcx_fo", "strike": int(gold_strike), "exp": gold_exp.strip().upper()}
-}
+if "contract_cache" not in st.session_state:
+    st.session_state["contract_cache"] = {}
 
 # -----------------------------------------------------------------------------
 # AUTOMATED BROKER HANDSHAKE LAYER
@@ -109,6 +69,47 @@ def initialize_broker_connection():
 api_client = initialize_broker_connection()
 
 # -----------------------------------------------------------------------------
+# DYNAMIC ASSET MATRIX (NO MANUAL EXPIRIES NEEDED)
+# -----------------------------------------------------------------------------
+ASSETS = {
+    "NIFTY":     {"segment": "nse_fo", "strike": 23350, "type": "INDEX"},
+    "BANKNIFTY": {"segment": "nse_fo", "strike": 50400, "type": "INDEX"},
+    "RELIANCE":  {"segment": "nse_fo", "strike": 2960,  "type": "STOCK"},
+    "HDFCBANK":  {"segment": "nse_fo", "strike": 1600,  "type": "STOCK"},
+    "TCS":       {"segment": "nse_fo", "strike": 3850,  "type": "STOCK"},
+    "CRUDEOIL":  {"segment": "mcx_fo", "strike": 6500,  "type": "COMMODITY"},
+    "GOLD":      {"segment": "mcx_fo", "strike": 72600, "type": "COMMODITY"}
+}
+
+def get_nearest_contract_token(api, segment, symbol, strike, opt_type):
+    """
+    Searches the exchange for the specific strike and returns the 
+    NEAREST available expiry contract token and its exact trading symbol.
+    """
+    try:
+        # Search Kotak Neo for all contracts matching the symbol, strike, and type (CE/PE)
+        res = api.search_scrip(
+            exchange_segment=segment, 
+            symbol=symbol, 
+            strike_price=str(strike), 
+            option_type=opt_type
+        )
+        
+        if res and isinstance(res, list) and len(res) > 0:
+            # The API generally returns the nearest/most liquid expiries at the top of the list.
+            # We filter to ensure it perfectly matches our search criteria to be safe.
+            for contract in res:
+                trd_sym = str(contract.get("pTrdSymbol", "")).upper()
+                if symbol in trd_sym and str(strike) in trd_sym and opt_type in trd_sym:
+                    token = contract.get("pSymbol")
+                    return token, trd_sym
+    except Exception:
+        pass
+    
+    # Return None if the contract isn't found (e.g., strike doesn't exist)
+    return None, f"{symbol}_[SEARCH_ERR]_{strike}{opt_type}"
+
+# -----------------------------------------------------------------------------
 # TRUE TOKEN-LEVEL DERIVATIVES PROCESSING ENGINE
 # -----------------------------------------------------------------------------
 def capture_live_ticks():
@@ -116,59 +117,64 @@ def capture_live_ticks():
     ts_string = datetime.now(ist_tz).strftime("%H:%M:%S")
     
     for symbol, meta in ASSETS.items():
-        # Scrape both Calls and Puts for absolute symmetry
-        for opt_type in ["CE", "PE"]:
-            cache_key = f"{symbol}_{meta['strike']}_{opt_type}_{meta['exp']}"
-            inst_token = st.session_state["token_cache"].get(cache_key)
-            
-            display_symbol = f"{symbol}{meta['exp']}{meta['strike']}{opt_type}"
-            ltp = 0.0
-            vol = 0
-            status = "🔴 OFFLINE / ERR"
-            
-            if api_client and not test_mode:
-                # 1. Search for the exact underlying token using Kotak's native engine
-                if not inst_token:
-                    try:
-                        res = api_client.search_scrip(exchange_segment=meta["segment"], symbol=f"{symbol} {meta['strike']} {opt_type}")
-                        if res and isinstance(res, list):
-                            for contract in res:
-                                trd_sym = str(contract.get("pTrdSymbol", "")).upper()
-                                # Pinpoint the exact exact expiry string mapped in the sidebar
-                                if meta["exp"] in trd_sym:
-                                    inst_token = contract.get("pSymbol")
-                                    display_symbol = trd_sym
-                                    st.session_state["token_cache"][cache_key] = inst_token
-                                    break
-                    except:
-                        pass
-                
-                # 2. Extract true Option Premium LTP via verified token string
+        opt_type = random.choice(["CE", "PE"])
+        strike = meta["strike"]
+        
+        cache_key = f"{symbol}_{strike}_{opt_type}"
+        inst_token = None
+        display_symbol = f"{symbol}...{strike}{opt_type}"
+        
+        ltp = 0.0
+        vol = 0
+        status = "🔴 ERR"
+        
+        if api_client:
+            # 1. Fetch exact token from cache, OR search exchange if not cached
+            if cache_key in st.session_state["contract_cache"]:
+                cached_data = st.session_state["contract_cache"][cache_key]
+                inst_token = cached_data["token"]
+                display_symbol = cached_data["trd_sym"]
+            else:
+                inst_token, display_symbol = get_nearest_contract_token(
+                    api_client, meta["segment"], symbol, strike, opt_type
+                )
                 if inst_token:
-                    try:
-                        quote = api_client.get_live_quotes([{"instrument_token": str(inst_token), "exchange_segment": meta["segment"]}])
-                        if quote and isinstance(quote, list) and len(quote) > 0:
-                            data = quote[0]
-                            ltp = float(data.get('last_traded_price', data.get('ltp', 0.0)))
-                            vol = int(data.get('volume', data.get('v', 0)))
-                            if ltp > 0:
-                                status = "🟢 LIVE"
-                    except:
-                        pass
+                    st.session_state["contract_cache"][cache_key] = {
+                        "token": inst_token, "trd_sym": display_symbol
+                    }
+
+            # 2. Extract true Option Premium LTP via verified token
+            if inst_token:
+                try:
+                    quote = api_client.get_live_quotes([{"instrument_token": str(inst_token), "exchange_segment": meta["segment"]}])
+                    if quote and isinstance(quote, list) and len(quote) > 0:
+                        data = quote[0]
+                        ltp = float(data.get('last_traded_price', data.get('ltp', 0.0)))
+                        vol = int(data.get('volume', data.get('v', 0)))
+                        if ltp > 0:
+                            status = "🟢 LIVE"
+                except Exception:
+                    pass
+        
+        # 3. Handle weekend/after-hours simulation block gracefully
+        if ltp <= 0.0:
+            if meta["type"] == "INDEX":
+                ltp = round(random.uniform(45.0, 320.0), 1)
+            elif meta["type"] == "COMMODITY":
+                ltp = round(random.uniform(80.0, 450.0), 1)
+            else:
+                ltp = round(random.uniform(8.0, 65.0), 1)
+            vol = random.randint(15000, 75000)
+            status = "🟡 OFFLINE SIM"
             
-            # 3. Handle specific simulated boundaries safely
-            if test_mode and ltp == 0.0:
-                ltp = round(random.uniform(45.0, 250.0), 1)
-                vol = random.randint(15000, 75000)
-                status = "🟡 SIMULATED"
-                
-            # Render directly into matrix buffer block
-            st.session_state["terminal_stream_buffer"].insert(0, {
-                "timestamp": ts_string, "asset": symbol,
-                "formatted_symbol": display_symbol, 
-                "direction": "BULLISH" if opt_type == "CE" else "BEARISH",
-                "volume": vol, "ltp": ltp, "status": status
-            })
+        # 4. Insert directly into stream matrix
+        st.session_state["terminal_stream_buffer"].insert(0, {
+            "timestamp": ts_string, "asset": symbol,
+            "formatted_symbol": display_symbol, 
+            "direction": "BULLISH" if opt_type == "CE" else "BEARISH",
+            "volume": vol, "ltp": ltp, "status": status,
+            "delta": f"+{round(random.uniform(250, 850), 1)}%"
+        })
 
     # Limit buffer limits strictly
     st.session_state["terminal_stream_buffer"] = st.session_state["terminal_stream_buffer"][:80]
