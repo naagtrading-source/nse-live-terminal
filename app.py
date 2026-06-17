@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-import json
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
@@ -15,31 +14,24 @@ st.markdown("""
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
     .section-header.commodity { color: #00ffcc; border-left: 4px solid #00ffcc; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
-    .debug-box { background-color: #1a1e29; border: 1px dashed #ff9f43; padding: 10px; border-radius: 4px; font-family: monospace; font-size: 0.8rem; margin-bottom: 15px; color: #e4e6eb; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | Network Diagnostics Mode")
+st.caption("Cross-Asset Order Book Feed Engine | Live Shared Cloud Engine Sync")
 
-# Clean, unrestricted public key-value cloud node bucket
-DATA_STREAM_URL = "https://kvdb.io/SymmetricalTerminalLink_NagarajuP/live_matrix_feed"
+# Dedicated stable JSON cloud bin endpoint
+CLOUD_BIN_URL = "https://api.jsonbin.io/v3/b/66704944ad19ca34f87b322a/latest"
 
 def load_live_spikes_from_cloud():
-    st.markdown("<div class='section-header' style='color:#ff9f43; border-left:4px solid #ff9f43;'>📡 CORE DATA CONNECTION NETWORK DIAGNOSTICS</div>", unsafe_allow_html=True)
-    
     try:
-        response = requests.get(DATA_STREAM_URL, timeout=5)
-        st.markdown(f"<div class='debug-box'>🟢 Cloud Server Status Code: <b>{response.status_code}</b><br>Raw Text Received Length: {len(response.text)} characters</div>", unsafe_allow_html=True)
-        
-        if response.status_code == 200 and response.text.strip():
-            parsed_json = response.json()
-            return pd.DataFrame(parsed_json)
-        else:
-            st.warning("⚠️ Cloud bucket is currently empty. Awaiting first transmission broadcast from Google Colab loop...")
-    except Exception as network_error:
-        st.markdown(f"<div class='debug-box' style='border-color:#f6465d; color:#f6465d;'>❌ Network Sync Error: {str(network_error)}</div>", unsafe_allow_html=True)
-        
+        # Server-side download completely bypasses browser security blocks
+        response = requests.get(CLOUD_BIN_URL, headers={"X-Bin-Meta": "false"}, timeout=4)
+        if response.status_code == 200:
+            data_content = response.json()
+            return pd.DataFrame(data_content)
+    except:
+        pass
     return pd.DataFrame()
 
 # -----------------------------------------------------------------------------
@@ -47,7 +39,7 @@ def load_live_spikes_from_cloud():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Awaiting dynamic network pipeline connection...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Synchronizing cloud connection buffer matrix...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
@@ -89,7 +81,7 @@ def render_terminal_log_block(asset_filter, df_source):
     components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN DASHBOARD CONTROLLER GRID
+# MAIN DISPLAY MATRIX DISPATCHER
 # -----------------------------------------------------------------------------
 all_df = load_live_spikes_from_cloud()
 
@@ -119,8 +111,8 @@ with c_col4:
     st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
     render_terminal_log_block("SILVER", all_df)
 
-# Soft UI window refresh pulse every 4 seconds
+# Automatic 3-second interface reload hook
 st.components.v1.html(
-    "<html><body><script>setTimeout(function(){window.location.reload();}, 4000);</script></body></html>",
+    "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
     height=0, width=0
 )
