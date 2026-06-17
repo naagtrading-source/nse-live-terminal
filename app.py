@@ -14,13 +14,14 @@ st.markdown("""
     .stTable, table { width: 100% !important; table-layout: fixed !important; text-align: center !important; }
     th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.65rem !important; font-weight: bold !important; padding: 6px 4px !important; border-bottom: 2px solid #222634 !important; }
     td { text-align: center !important; font-size: 0.72rem !important; padding: 6px 4px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
-    .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 15px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
+    .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
+    .section-header.commodity { color: #00ffcc; border-left: 4px solid #00ffcc; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Live Order Book Feed Engine | High-Speed Webhook Sync")
+st.caption("Cross-Asset Order Book Feed Engine | Real-Time High-Speed Webhook Matrix")
 
 DB_FILE = "terminal_history.db"
 
@@ -40,13 +41,11 @@ def init_db():
 init_db()
 
 # -----------------------------------------------------------------------------
-# HIGH-SPEED SESSION RAM STORAGE LAYER
+# HIGH-SPEED WEBHOOK INTERCEPTOR
 # -----------------------------------------------------------------------------
 if "live_memory_cache" not in st.session_state:
     st.session_state["live_memory_cache"] = []
 
-# --- FAST WEBHOOK CAPTURE ---
-# We use st.text_input as a hidden data container that Colab can interact with via API
 incoming_data = st.text_input("Webhook Pipe Connection", key="webhook_receiver", label_visibility="collapsed")
 
 if incoming_data:
@@ -55,15 +54,14 @@ if incoming_data:
         payload = json.loads(incoming_data)
         st.session_state["live_memory_cache"].insert(0, payload)
         
-        # Also write safely to database log back up
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO ledger (timestamp, asset, market_type, expiry, strike, type, quadrant, direction, volume, ltp, delta)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (payload['timestamp'], payload['asset'], 'INDEX', payload['expiry'], int(payload['strike']), 
-              payload['type'], payload['quadrant'], payload['direction'], int(payload['volume']), 
-              float(payload['ltp']), payload['delta']))
+        """, (payload['timestamp'], payload['asset'].upper(), payload.get('market_type', 'INDEX'), payload['expiry'], 
+              int(payload['strike']), payload['type'].upper(), payload['quadrant'], payload['direction'], 
+              int(payload['volume']), float(payload['ltp']), payload['delta']))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -72,7 +70,6 @@ if incoming_data:
 def load_live_spikes_from_db():
     if st.session_state["live_memory_cache"]:
         return pd.DataFrame(st.session_state["live_memory_cache"])
-    
     if os.path.exists(DB_FILE):
         try:
             conn = sqlite3.connect(DB_FILE)
@@ -84,16 +81,16 @@ def load_live_spikes_from_db():
     return pd.DataFrame()
 
 # -----------------------------------------------------------------------------
-# GRAPHICAL TERMINAL MATRIX GENERATOR
+# TERMINAL MATRIX RENDERER
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown("<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live webhook push confirmation from Colab loop...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live {asset_filter} updates from Colab script...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning live {asset_filter} webhook stream...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} order flows...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
@@ -127,17 +124,17 @@ def render_terminal_log_block(asset_filter, df_source):
         <tbody>{rows_html}</tbody>
     </table></body></html>
     """
-    components.html(table_html, height=280, scrolling=True)
+    components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN APP VIEW DISPATCHER
+# MAIN VIEW DISPATCHER GRID
 # -----------------------------------------------------------------------------
-@st.fragment(run_every=1) # Accelerate refresh frame to 1 second
+@st.fragment(run_every=1)
 def render_unified_dashboard_grid():
     all_df = load_live_spikes_from_db()
     
-    st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE LIVE ACTIVITY RADAR</div>", unsafe_allow_html=True)
-    
+    # SECTION 1: EQUITY INDICES (Closed after 3:30 PM)
+    st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
     idx_col1, idx_col2 = st.columns(2)
     with idx_col1:
         st.markdown("<div class='asset-title-banner'>🦅 NIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
@@ -145,5 +142,15 @@ def render_unified_dashboard_grid():
     with idx_col2:
         st.markdown("<div class='asset-title-banner'>🦅 BANKNIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
         render_terminal_log_block("BANKNIFTY", all_df)
-
-render_unified_dashboard_grid()
+        
+    # SECTION 2: MCX COMMODITIES (LIVE UNTIL 11:30 PM!)
+    st.markdown("<div class='section-header commodity'>🌙 MCX METALS & COMMODITIES MULTI-GRID</div>", unsafe_allow_html=True)
+    c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+    with c_col1:
+        st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 CRUDEOIL</div>", unsafe_allow_html=True)
+        render_terminal_log_block("CRUDEOIL", all_df)
+    with c_col2:
+        st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 NATURALGAS</div>", unsafe_allow_html=True)
+        render_terminal_log_block("NATURALGAS", all_df)
+    with c_col3:
+        st.markdown("<div class='asset-title-banner' style='color:#ffea0
