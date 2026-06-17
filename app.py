@@ -6,6 +6,7 @@ import pytz
 from datetime import datetime
 import streamlit.components.v1 as components
 
+# Force wide layout immediately
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
 st.markdown("""
@@ -21,7 +22,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | Real-Time High-Speed Webhook Matrix")
+st.caption("Cross-Asset Order Book Feed Engine | High-Speed Live Sync")
 
 DB_FILE = "terminal_history.db"
 
@@ -43,17 +44,14 @@ init_db()
 # -----------------------------------------------------------------------------
 # HIGH-SPEED WEBHOOK INTERCEPTOR
 # -----------------------------------------------------------------------------
-if "live_memory_cache" not in st.session_state:
-    st.session_state["live_memory_cache"] = []
-
-incoming_data = st.text_input("Webhook Pipe Connection", key="webhook_receiver", label_visibility="collapsed")
-
-if incoming_data:
+# INTERCEPT: Pull incoming query data parameters directly on runtime execution
+query_params = st.query_params
+if "webhook_receiver" in query_params:
     try:
         import json
-        payload = json.loads(incoming_data)
-        st.session_state["live_memory_cache"].insert(0, payload)
+        payload = json.loads(query_params["webhook_receiver"])
         
+        # Write directly down to local SQLite ledger row
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("""
@@ -64,16 +62,17 @@ if incoming_data:
               int(payload['volume']), float(payload['ltp']), payload['delta']))
         conn.commit()
         conn.close()
+        
+        # Clear params after successful consumption to prevent execution deadlocks
+        st.query_params.clear()
     except Exception as e:
         pass
 
 def load_live_spikes_from_db():
-    if st.session_state["live_memory_cache"]:
-        return pd.DataFrame(st.session_state["live_memory_cache"])
     if os.path.exists(DB_FILE):
         try:
             conn = sqlite3.connect(DB_FILE)
-            df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
+            df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC LIMIT 50", conn)
             conn.close()
             return df
         except:
@@ -85,12 +84,12 @@ def load_live_spikes_from_db():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live {asset_filter} updates...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting first network handshake packet...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} order flows...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning {asset_filter} frequencies...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
@@ -127,36 +126,38 @@ def render_terminal_log_block(asset_filter, df_source):
     components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN VIEW DISPATCHER GRID
+# MAIN DIRECT RENDER ENGINE (Bypasses fragments to process live signals)
 # -----------------------------------------------------------------------------
-@st.fragment(run_every=1)
-def render_unified_dashboard_grid():
-    all_df = load_live_spikes_from_db()
-    
-    # SECTION 1: EQUITY INDICES (Closed after 3:30 PM)
-    st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
-    idx_col1, idx_col2 = st.columns(2)
-    with idx_col1:
-        st.markdown("<div class='asset-title-banner'>🦅 NIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
-        render_terminal_log_block("NIFTY", all_df)
-    with idx_col2:
-        st.markdown("<div class='asset-title-banner'>🦅 BANKNIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
-        render_terminal_log_block("BANKNIFTY", all_df)
-        
-    # SECTION 2: MCX COMMODITIES (LIVE UNTIL 11:30 PM!)
-    st.markdown("<div class='section-header commodity'>🌙 MCX METALS & COMMODITIES MULTI-GRID</div>", unsafe_allow_html=True)
-    c_col1, c_col2, c_col3, c_col4 = st.columns(4)
-    with c_col1:
-        st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 CRUDEOIL</div>", unsafe_allow_html=True)
-        render_terminal_log_block("CRUDEOIL", all_df)
-    with c_col2:
-        st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 NATURALGAS</div>", unsafe_allow_html=True)
-        render_terminal_log_block("NATURALGAS", all_df)
-    with c_col3:
-        st.markdown("<div class='asset-title-banner' style='color:#ffea00;'>🔥 GOLD</div>", unsafe_allow_html=True)
-        render_terminal_log_block("GOLD", all_df)
-    with c_col4:
-        st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
-        render_terminal_log_block("SILVER", all_df)
+all_df = load_live_spikes_from_db()
 
-render_unified_dashboard_grid()
+# SECTION 1: EQUITY INDICES
+st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
+idx_col1, idx_col2 = st.columns(2)
+with idx_col1:
+    st.markdown("<div class='asset-title-banner'>🦅 NIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
+    render_terminal_log_block("NIFTY", all_df)
+with idx_col2:
+    st.markdown("<div class='asset-title-banner'>🦅 BANKNIFTY INSTANT SURGE LOGGER</div>", unsafe_allow_html=True)
+    render_terminal_log_block("BANKNIFTY", all_df)
+    
+# SECTION 2: MCX COMMODITIES
+st.markdown("<div class='section-header commodity'>🌙 MCX METALS & COMMODITIES MULTI-GRID</div>", unsafe_allow_html=True)
+c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+with c_col1:
+    st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 CRUDEOIL</div>", unsafe_allow_html=True)
+    render_terminal_log_block("CRUDEOIL", all_df)
+with c_col2:
+    st.markdown("<div class='asset-title-banner' style='color:#00ffcc;'>🔥 NATURALGAS</div>", unsafe_allow_html=True)
+    render_terminal_log_block("NATURALGAS", all_df)
+with c_col3:
+    st.markdown("<div class='asset-title-banner' style='color:#ffea00;'>🔥 GOLD</div>", unsafe_allow_html=True)
+    render_terminal_log_block("GOLD", all_df)
+with c_col4:
+    st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
+    render_terminal_log_block("SILVER", all_df)
+
+# Automatic 3-second direct window reload script hook
+st.components.v1.html(
+    "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
+    height=0, width=0
+)
