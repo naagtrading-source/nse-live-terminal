@@ -43,14 +43,20 @@ if "terminal_stream_buffer" not in st.session_state:
 # -----------------------------------------------------------------------------
 @st.cache_resource(show_spinner=False)
 def initialize_broker_connection():
-    required_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_CONSUMER_SECRET", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
+    # Streamlined key checks matching the updated v2 API requirements
+    required_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
     missing_keys = [key for key in required_keys if not os.environ.get(key)]
     
     if missing_keys:
         return f"MISSING: {', '.join(missing_keys)}"
 
     try:
-        api = NeoAPI(environment='prod')
+        # Initialize natively using your primary app consumer key
+        api = NeoAPI(
+            environment='prod',
+            consumer_key=os.environ.get("KOTAK_CONSUMER_KEY")
+        )
+        
         totp_secret = os.environ.get("KOTAK_TOTP_SECRET").replace(" ", "")
         totp_token = pyotp.TOTP(totp_secret).now()
         
@@ -66,11 +72,10 @@ def initialize_broker_connection():
 
 api_client = initialize_broker_connection()
 
-# Stop execution and print precise setup steps if variables are missing
 if isinstance(api_client, str):
     if api_client.startswith("MISSING:"):
         st.error(f"⚠️ Configuration Error: The following variables are missing from Render: {api_client.replace('MISSING:', '')}")
-        st.info("💡 Solution: Add these exact keys into your Render Environment dashboard tab to unlock the terminal code loop.")
+        st.info("💡 Solution: Add these keys into your Render Environment dashboard to unlock the terminal code loop.")
     else:
         st.error(f"🔴 Kotak API Handshake Terminated: {api_client}")
         st.info("💡 Solution: Check if your TOTP Secret has changed or if your account password requires a manual reset.")
@@ -107,7 +112,6 @@ def capture_true_market_state():
         if not scrip_records:
             continue
 
-        # Fetch underlying real-time anchor rates
         try:
             if meta["is_fut"]:
                 for item in scrip_records:
@@ -131,7 +135,6 @@ def capture_true_market_state():
         if underlying_price <= 0.0:
             continue
 
-        # Map active ATM option clusters around the current underlying price
         atm_strike = int(round(underlying_price / meta["step"]) * meta["step"])
         target_strikes = [atm_strike - meta["step"], atm_strike, atm_strike + meta["step"]]
 
@@ -167,7 +170,7 @@ all_df = pd.DataFrame(st.session_state["terminal_stream_buffer"])
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.caption("📅 Market Session Closed or Awaiting Live Feed Initialization...")
+        st.caption("📅 Market Session Closed or Awaiting Live Feed...")
         return
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
@@ -182,7 +185,7 @@ def render_terminal_log_block(asset_filter, df_source):
         **{r['formatted_symbol']}** | Matrix: **{r['direction']}** | Vol: {int(r['volume']):,} | **Premium LTP: ₹{r['ltp']}** | 🕒 {r['timestamp']}
         """)
 
-tab1, tab2, tab3 = st.tabs([" Northampton Equity Indices", "📊 Nifty 50 Stock Options", "🛢️ MCX Commodities"])
+tab1, tab2, tab3 = st.tabs(["📈 Equity Indices", "📊 Nifty 50 Stock Options", "🛢️ MCX Commodities"])
 
 with tab1:
     st.markdown("#### ⚡ EXCHANGE REGISTERED DERIVATIVE INDICES")
