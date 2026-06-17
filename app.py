@@ -30,35 +30,37 @@ st.title("🚨 Symmetrical Institutional Volatility Terminal")
 st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Dynamic Adaptive Mode")
 
 # -----------------------------------------------------------------------------
-# MEMORY CACHED DATA FETCHER
+# MEMORY CACHED DATA FETCHER WITH LIVE SCREEN DIAGNOSTICS
 # -----------------------------------------------------------------------------
-@st.cache_resource(ttl=3600)
+@st.cache_resource(ttl=60) # Reduce cache lifetime to catch fresh login errors instantly
 def initialized_cached_broker():
     try:
-        return get_kotak_client()
+        client = get_kotak_client()
+        return client, "SUCCESS"
     except Exception as e:
-        print(f"Handshake notice: {e}")
-        return None
+        return None, str(e)
 
-client = initialized_cached_broker()
+client, login_status = initialized_cached_broker()
+
+# Display the connection diagnostic banner right at the top
+if login_status != "SUCCESS":
+    st.error(f"❌ Kotak Auth Failed on Render: {login_status}")
+    st.info("💡 Tip: If this says 'Invalid OTP' or 'Bad Credentials', verify your KOTAK_TOTP_SECRET key in Render's Environment Variables panel.")
+else:
+    st.success("🟢 Kotak Broker Session Connected Successfully on Render Server Container!")
 
 def fetch_live_market_data():
-    """Queries Kotak with deep safety scaffolding to protect against white-screen errors."""
     rows = []
     ts = datetime.now().strftime("%H:%M:%S")
     
     if client is not None:
         try:
-            # Safely request weekly listings from Kotak
-            try:
-                search_reply = client.search_scrip(exchange_segment="nse_fo", symbol="NIFTY")
-                # Fallback to general parsing if dict structure varies across client versions
-                if isinstance(search_reply, dict):
-                    search_reply = search_reply.get('data', [])
-                tokens_to_scan = [str(scrip['tok']) for scrip in search_reply[:6] if 'tok' in scrip]
-            except Exception as search_err:
-                print(f"Search directory bypassed: {search_err}")
-                tokens_to_scan = []
+            # Dynamic lookups
+            search_reply = client.search_scrip(exchange_segment="nse_fo", symbol="NIFTY")
+            if isinstance(search_reply, dict):
+                search_reply = search_reply.get('data', [])
+            
+            tokens_to_scan = [str(scrip['tok']) for scrip in search_reply[:6] if 'tok' in scrip]
 
             if tokens_to_scan:
                 params = [{"instrument_token": t, "exchange_segment": "nse_fo"} for t in tokens_to_scan]
@@ -81,9 +83,8 @@ def fetch_live_market_data():
                             'quadrant': 'Buying Sweep', 'volume': vol, 'ltp': ltp, 'direction': 'BULLISH'
                         })
         except Exception as api_err:
-            print(f"Live data processing bypass note: {api_err}")
+            st.warning(f"⚠️ Live Stream API reading error: {api_err}")
             
-    # STABLE INTERFACE CORES: Guarantees your dashboard layout NEVER crashes white
     if not rows:
         rows = [
             {'timestamp': ts, 'asset': 'NIFTY', 'strike': 23400, 'type': 'CE', 'quadrant': 'Call Buying', 'volume': 45800, 'ltp': 142.5, 'direction': 'BULLISH'},
