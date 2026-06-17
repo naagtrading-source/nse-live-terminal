@@ -51,21 +51,23 @@ STRIKE_RANGE    = 3
 
 # ── Suppress Streamlit calls inside Neo SDK ───────────────────────────────────
 def _run(fn):
+    """Run fn with all streamlit calls inside Neo SDK suppressed."""
     dummy = mock.MagicMock()
     patches = []
+    # Only patch inside neo_api_client modules — never patch top-level streamlit
     for mod_name, mod in list(sys.modules.items()):
-        if "neo" in mod_name.lower() and hasattr(mod, "__dict__"):
-            if hasattr(mod, "st"):
+        if "neo_api_client" in mod_name and hasattr(mod, "__dict__"):
+            # Patch the 'st' reference if the module imported streamlit as st
+            if hasattr(mod, "st") and mod.st is not dummy:
                 try: patches.append(mock.patch.object(mod, "st", dummy))
                 except: pass
-            for fn2 in ("success","error","warning","info","write","markdown","spinner","empty","caption"):
-                if hasattr(mod, fn2):
-                    try: patches.append(mock.patch.object(mod, fn2, dummy))
+            # Patch individual streamlit functions if imported directly
+            for fn_name in ("success","error","warning","info","write",
+                            "markdown","spinner","empty","caption","subheader","header"):
+                attr = getattr(mod, fn_name, None)
+                if attr is not None and callable(attr) and attr is not dummy:
+                    try: patches.append(mock.patch.object(mod, fn_name, dummy))
                     except: pass
-    import streamlit as _st
-    for fn2 in ("success","error","warning","info","write","markdown","spinner","empty","caption"):
-        try: patches.append(mock.patch.object(_st, fn2, dummy))
-        except: pass
     for p in patches:
         try: p.start()
         except: pass
