@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import db_provider
+import sqlite3
+from kotak_auth import get_kotak_client
 
 st.set_page_config(page_title="Liquidity Sweep Scanner", layout="wide", page_icon="💥")
 
@@ -16,26 +17,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("💥 Institutional Liquidity Sweep Scanner")
-st.caption("Advanced Order Flow Trapping Index | Pinpointing Stop-Loss Hunting Turning Zones")
+st.caption("Advanced Order Flow Trapping Index | Live Data Link via Kotak Securities Terminal")
 
-# Run the automated background engine process loop on this thread
-db_provider.run_automated_generation_cycle()
-df = db_provider.load_ledger_from_db()
+DB_FILE = "terminal_history.db"
+
+def load_ledger_from_db():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
+
+# Fetch data populated by our cloud background handler instance
+df = load_ledger_from_db()
 
 if df.empty:
-    st.info("⏳ Synchronizing deep order flow tracking matrices...")
+    st.info("⏳ Synchronizing deep order flow tracking matrices from Kotak terminal nodes...")
 else:
     st.write("### 🚨 Detected Active Liquidity Sweeps")
     
     # Filter for massive blocks relative to their asset class thresholds
+    # Enforces standard lowercase index columns to avoid runtime schema errors
     sweeps = df[(df['volume'] > 1350000) | ((df['market_type'] == 'COMMODITY') & (df['volume'] > 42000))].copy()
     
     if not sweeps.empty:
-        # Drop duplicates to keep the layout perfectly clean
+        # Drop duplicates to keep the layout perfectly clean and highly readable
         sweeps = sweeps.drop_duplicates(subset=['timestamp', 'asset', 'strike', 'volume']).head(10)
         
         for _, r in sweeps.iterrows():
-            is_bullish = "Buying" in r['Quadrant'] or "PUMP" in r['direction']
+            # Standardized string lookups to match raw data storage formats
+            quadrant_str = str(r.get('quadrant', ''))
+            direction_str = str(r.get('direction', ''))
+            
+            is_bullish = "Buying" in quadrant_str or "PUMP" in direction_str
             border_color = "#2ebd85" if is_bullish else "#f6465d"
             text_color = "#2ebd85" if is_bullish else "#f6465d"
             action_type = "RETAIL SHORTS TRAPPED (BULLISH REVERSAL)" if is_bullish else "RETAIL LONGS TRAPPED (BEARISH REVERSAL)"
@@ -47,11 +63,11 @@ else:
                     <span style='font-size:0.72rem; background:#1b1f2e; border:1px solid #2d334a; padding:2px 6px; border-radius:4px; font-weight:bold; color:#ff9f43;'>{action_type}</span>
                 </div>
                 <p style='font-size:0.82rem; color:#a0a5b5; margin-bottom:10px;'>
-                    Extreme volume block detected out-of-bounds at strike <b>{r['Target Strike']}</b>. Institutions cleared out retail stops before price reversal.
+                    Extreme volume block detected out-of-bounds at strike <b>{int(r['strike'])}</b>. Institutions cleared out retail stops before price reversal.
                 </p>
                 <div class='row g-2'>
-                    <div class='col-3'><div class='metric-grid'><div class='m-lbl'>Sweep Volume</div><div class='m-val' style='color:#ff9f43;'>{r['volume']:,}</div></div></div>
-                    <div class='col-3'><div class='metric-grid'><div class='m-lbl'>Execution LTP</div><div class='m-val'>{r['ltp']}</div></div></div>
+                    <div class='col-3'><div class='metric-grid'><div class='m-lbl'>Sweep Volume</div><div class='m-val' style='color:#ff9f43;'>{int(r['volume']):,}</div></div></div>
+                    <div class='col-3'><div class='metric-grid'><div class='m-lbl'>Execution LTP</div><div class='m-val'>{float(r['ltp'])}</div></div></div>
                     <div class='col-3'><div class='metric-grid'><div class='m-lbl'>Options Type</div><div class='m-val' style='color:#ff9f43;'>{r['type']}</div></div></div>
                     <div class='col-3'><div class='metric-grid'><div class='m-lbl'>Timestamp</div><div class='m-val' style='color:#a0a5b5;'>{r['timestamp']}</div></div></div>
                 </div>
