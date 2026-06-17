@@ -56,27 +56,51 @@ def get_api():
         mpin = os.environ.get("KOTAK_MPIN","").strip()
         logs.append(f"✅ Mobile: ...{mob[-4:]} ({len(mob)} digits)")
 
-        r1 = api.totp_login(mobile_number=mob, ucc=ucc, totp=totp)
-        logs.append(f"✅ totp_login → {str(r1)[:250]}")
+        # Neo API v2 calls st.success() internally — patch st to suppress it
+        import unittest.mock as mock
+        dummy = mock.MagicMock()
 
-        # Extract Auth + SID from login response for validate call
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy):
+
+            r1 = api.totp_login(mobile_number=mob, ucc=ucc, totp=totp)
+
+        # r1 is now the actual dict response, not a DeltaGenerator
+        logs.append(f"✅ totp_login type={type(r1).__name__} → {str(r1)[:250]}")
+
+        # Extract Auth + SID
         auth, sid = None, None
         if isinstance(r1, dict):
             d = r1.get("data", r1)
             auth = d.get("Auth") or d.get("auth") or d.get("token")
             sid  = d.get("SID")  or d.get("sid")  or d.get("Sid")
+        logs.append(f"auth={'set' if auth else 'MISSING'} sid={'set' if sid else 'MISSING'}")
 
-        try:
-            if auth and sid:
-                r2 = api.totp_validate(mpin=mpin, Auth=auth, sid=sid)
-            elif auth:
-                r2 = api.totp_validate(mpin=mpin, Auth=auth)
-            else:
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy):
+            try:
+                if auth and sid:
+                    r2 = api.totp_validate(mpin=mpin, Auth=auth, sid=sid)
+                elif auth:
+                    r2 = api.totp_validate(mpin=mpin, Auth=auth)
+                else:
+                    r2 = api.totp_validate(mpin=mpin)
+            except TypeError:
                 r2 = api.totp_validate(mpin=mpin)
-        except TypeError:
-            r2 = api.totp_validate(mpin=mpin)
 
-        logs.append(f"✅ totp_validate → {str(r2)[:250]}")
+        logs.append(f"✅ totp_validate type={type(r2).__name__} → {str(r2)[:250]}")
+
+        # Check validate succeeded
+        if isinstance(r2, dict):
+            if r2.get("error") or r2.get("Error"):
+                return None, f"Validate failed: {str(r2)[:200]}", logs
+
         return api, "OK", logs
 
     except Exception as e:
@@ -100,8 +124,15 @@ with st.expander("🔧 Diagnostic", expanded=(status != "OK")):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_scrip(seg, symbol):
     if api is None or status != "OK": return []
+    import unittest.mock as mock
+    dummy = mock.MagicMock()
     try:
-        r = api.search_scrip(exchange_segment=seg, symbol=symbol)
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy):
+            r = api.search_scrip(exchange_segment=seg, symbol=symbol)
         if isinstance(r, dict): return r.get("data",[]) or r.get("result",[]) or []
         return r if isinstance(r, list) else []
     except Exception:
@@ -127,8 +158,15 @@ def safe_vol(q):
     return 0
 
 def fetch_quote(token, seg):
+    import unittest.mock as mock
+    dummy = mock.MagicMock()
     try:
-        q = api.get_live_quotes([{"instrument_token": str(token), "exchange_segment": seg}])
+        with mock.patch("streamlit.success", dummy), \
+             mock.patch("streamlit.error",   dummy), \
+             mock.patch("streamlit.warning", dummy), \
+             mock.patch("streamlit.info",    dummy), \
+             mock.patch("streamlit.write",   dummy):
+            q = api.get_live_quotes([{"instrument_token": str(token), "exchange_segment": seg}])
         if isinstance(q, list) and q:   return q[0]
         if isinstance(q, dict):
             d = q.get("data",[])
