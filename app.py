@@ -25,19 +25,61 @@ st.caption("Live Order Book Feed Engine | Real-Time Spike Matrix")
 DB_FILE = "terminal_history.db"
 
 # -----------------------------------------------------------------------------
-# DATABASE DATA LOADER (Sorts newest row on top)
+# DATABASE HANDLER & NET REFRESH MECHANICS
 # -----------------------------------------------------------------------------
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT, asset TEXT, market_type TEXT, expiry TEXT,
+            strike INTEGER, type TEXT, quadrant TEXT, direction TEXT, volume INTEGER, ltp REAL, delta TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Intercept incoming live data pushes directly from your Google Colab loops
+query_params = st.query_params
+if "action" in query_params and query_params["action"] == "push_spike":
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO ledger (timestamp, asset, market_type, expiry, strike, type, quadrant, direction, volume, ltp, delta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            query_params.get('timestamp', datetime.now().strftime("%H:%M:%S")),
+            query_params.get('asset', 'NIFTY').upper(),
+            query_params.get('market_type', 'INDEX'),
+            query_params.get('expiry', '26DEC'),
+            int(query_params.get('strike', 0)),
+            query_params.get('type', 'CE').upper(),
+            query_params.get('quadrant', 'Instant Spike'),
+            query_params.get('direction', '🟢 BULLISH'),
+            int(query_params.get('volume', 0)),
+            float(query_params.get('ltp', 0.0)),
+            query_params.get('delta', '0.0%')
+        ))
+        conn.commit()
+        conn.close()
+        st.query_params.clear()  # Clear the address bar query to reset state cleanly
+    except Exception as e:
+        print(f"Server insertion slip: {e}")
+
 def load_live_spikes_from_db():
     if not os.path.exists(DB_FILE):
         return pd.DataFrame()
     try:
         conn = sqlite3.connect(DB_FILE)
-        # CRITICAL: ORDER BY id DESC forces the newest data rows to stack on top!
+        # ORDER BY id DESC ensures new spikes stack on top immediately
         df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
         conn.close()
         return df
-    except Exception as e:
-        print(f"Database read slip: {e}")
+    except:
         return pd.DataFrame()
 
 # -----------------------------------------------------------------------------
@@ -48,34 +90,27 @@ def render_terminal_log_block(asset_filter, df_source):
         st.markdown("<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting first live order book scrip update from Colab loop...</p>", unsafe_allow_html=True)
         return
         
-    # Filter for specific asset (NIFTY vs BANKNIFTY)
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
-    
     if f_df.empty:
         st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning live {asset_filter} order book feeds...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
-    # Process rows (newest entries are already at the top due to DESC sql query)
     for _, r in f_df.iterrows():
-        # Match colors to your log themes
         is_bull = "BULLISH" in str(r.get('direction', '')).upper() or "BUY" in str(r.get('quadrant', '')).upper()
         badge_color = "#2ebd85" if is_bull else "#f6465d"
         bg_row_effect = "rgba(46, 189, 133, 0.08)" if is_bull else "rgba(246, 70, 93, 0.08)"
         
-        # Build raw string text exactly matching your log output structure
         contract_type = str(r.get('type', 'CE')).upper()
         strike_val = int(r.get('strike', 0))
         expiry_lbl = str(r.get('expiry', '26DEC')).replace("Expiry (", "").replace(")", "").upper()
         
-        # Reconstruct standard formatting symbol name: NIFTY26DEC30000CE
         formatted_symbol = f"{asset_filter}{expiry_lbl}{strike_val}{contract_type}"
-        
-        # Extract or simulate surge percentage from volume scales
         vol_amt = int(r.get('volume', 0))
-        surge_val = str(r.get('delta', "+708.6%"))
-        if not str(surge_val).startswith("+") and not str(surge_val).startswith("-"):
-            surge_val = f"+{surge_val}%"
+        surge_val = str(r.get('delta', "+0.0%"))
+        
+        if not surge_val.startswith("+") and not surge_val.startswith("-"):
+            surge_val = f"+{surge_val}"
 
         rows_html += f"""
         <tr style='background-color: {bg_row_effect} !important; border-bottom: 1px solid #1f2231;'>
@@ -94,14 +129,12 @@ def render_terminal_log_block(asset_filter, df_source):
         <tbody>{rows_html}</tbody>
     </table></body></html>
     """
-    
-    # Render interactive frame with a clean scrolling buffer for historical spikes
     components.html(table_html, height=280, scrolling=True)
 
 # -----------------------------------------------------------------------------
 # MAIN APP VIEW DISPATCHER
 # -----------------------------------------------------------------------------
-@st.fragment(run_every=2) # High-speed 2-second UI checker matrix loop
+@st.fragment(run_every=2) # High speed auto-refresh every 2 seconds
 def render_unified_dashboard_grid():
     all_df = load_live_spikes_from_db()
     
