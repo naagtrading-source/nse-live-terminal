@@ -1,12 +1,8 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
-import os
-import json
-from datetime import datetime
+import requests
 import streamlit.components.v1 as components
 
-# 🚨 Force wide layout layout matrix parameters immediately
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
 st.markdown("""
@@ -22,57 +18,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | High-Speed Live Network API Sync")
+st.caption("Cross-Asset Order Book Feed Engine | Real-Time Cloud-Bridge Data Stream")
 
-DB_FILE = "terminal_history.db"
+# Secure shared cloud storage path
+CLOUD_DATA_LINK = "https://kvdb.io/SymmetricalTerminalLink_NagarajuP/live_matrix_feed"
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS ledger (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT, asset TEXT, market_type TEXT, expiry TEXT,
-            strike INTEGER, type TEXT, quadrant TEXT, direction TEXT, volume INTEGER, ltp REAL, delta TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# -----------------------------------------------------------------------------
-# DUAL ENGINE: INTEGRATED FASTAPI LINK HANDSHAKE
-# -----------------------------------------------------------------------------
-# Intercept incoming direct raw URL updates sent from the requests engine
-query_params = st.query_params
-if "webhook_data" in query_params:
+def load_live_spikes_from_cloud():
     try:
-        payload = json.loads(query_params["webhook_data"])
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO ledger (timestamp, asset, market_type, expiry, strike, type, quadrant, direction, volume, ltp, delta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (payload['timestamp'], payload['asset'].upper(), payload.get('market_type', 'INDEX'), payload['expiry'], 
-              int(payload['strike']), payload['type'].upper(), payload['quadrant'], payload['direction'], 
-              int(payload['volume']), float(payload['ltp']), payload['delta']))
-        conn.commit()
-        conn.close()
-        st.query_params.clear()  # Flush out parameter strings to prevent deadlocks
-    except Exception as e:
+        response = requests.get(CLOUD_DATA_LINK, timeout=3)
+        if response.status_code == 200:
+            data_list = response.json()
+            return pd.DataFrame(data_list)
+    except:
         pass
-
-def load_live_spikes_from_db():
-    if os.path.exists(DB_FILE):
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            # Pull the latest 40 rows from the localized database ledger
-            df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC LIMIT 40", conn)
-            conn.close()
-            return df
-        except:
-            return pd.DataFrame()
     return pd.DataFrame()
 
 # -----------------------------------------------------------------------------
@@ -80,12 +38,12 @@ def load_live_spikes_from_db():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live {asset_filter} updates from loop...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Connecting to active cloud bridge stream...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning active {asset_filter} order books...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning {asset_filter} frequencies...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
@@ -122,9 +80,9 @@ def render_terminal_log_block(asset_filter, df_source):
     components.html(table_html, height=200, scrolling=True)
 
 # -----------------------------------------------------------------------------
-# MAIN DASHBOARD RENDER LAYER
+# MAIN DISPLAY COMPASS
 # -----------------------------------------------------------------------------
-all_df = load_live_spikes_from_db()
+all_df = load_live_spikes_from_cloud()
 
 # SECTION 1: EQUITY INDICES
 st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
@@ -152,7 +110,7 @@ with c_col4:
     st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
     render_terminal_log_block("SILVER", all_df)
 
-# Soft auto-refresh hook to query the local SQLite engine
+# Real-time auto-refresh page heartbeat (Checks cloud every 3 seconds)
 st.components.v1.html(
     "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
     height=0, width=0
