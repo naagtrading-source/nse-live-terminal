@@ -18,17 +18,21 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Cross-Asset Order Book Feed Engine | Real-Time Cloud-Bridge Data Stream")
+st.caption("Cross-Asset Order Book Feed Engine | Real-Time Live Cloud Data Stream")
 
-# Secure shared cloud storage path
-CLOUD_DATA_LINK = "https://kvdb.io/SymmetricalTerminalLink_NagarajuP/live_matrix_feed"
+# Stable public JSON data pipeline endpoint link node
+PUBLIC_JSON_LINK = "https://api.jsonbin.io/v3/b/66704944ad19ca34f87b322a/latest"
 
 def load_live_spikes_from_cloud():
     try:
-        response = requests.get(CLOUD_DATA_LINK, timeout=3)
+        # Pull latest rows out of public cloud json array structure
+        response = requests.get(PUBLIC_JSON_LINK, headers={"X-Bin-Meta": "false"}, timeout=4)
         if response.status_code == 200:
-            data_list = response.json()
-            return pd.DataFrame(data_list)
+            data_payload = response.json()
+            if isinstance(data_payload, list):
+                return pd.DataFrame(data_payload)
+            elif isinstance(data_payload, dict) and "record" in data_payload:
+                return pd.DataFrame(data_payload["record"])
     except:
         pass
     return pd.DataFrame()
@@ -38,12 +42,12 @@ def load_live_spikes_from_cloud():
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Connecting to active cloud bridge stream...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Connecting to global matrix cloud data feed...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning {asset_filter} frequencies...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning live {asset_filter} frequencies...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
@@ -110,7 +114,7 @@ with c_col4:
     st.markdown("<div class='asset-title-banner' style='color:#e0e0e0;'>🔥 SILVER</div>", unsafe_allow_html=True)
     render_terminal_log_block("SILVER", all_df)
 
-# Real-time auto-refresh page heartbeat (Checks cloud every 3 seconds)
+# Auto-refresh page heartbeat (Checks cloud data link every 3 seconds)
 st.components.v1.html(
     "<html><body><script>setTimeout(function(){window.location.reload();}, 3000);</script></body></html>",
     height=0, width=0
