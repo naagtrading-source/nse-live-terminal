@@ -3,3 +3,4 @@ pandas
 pytz
 pyotp
 requests
+neo-api-client
