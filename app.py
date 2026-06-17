@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import random
-import time
 import pytz
 from datetime import datetime, timedelta
 
@@ -12,7 +11,6 @@ st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout=
 # -----------------------------------------------------------------------------
 st.markdown("""
     <style>
-    /* Force high-contrast background and border rules */
     div[data-testid="stVerticalBlock"] { gap: 0.5rem !important; }
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
     .stTabs [data-baseweb="tab"] {
@@ -30,9 +28,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# FIXED GLOBAL TOP BRANDING HEADER
+# GLOBAL HEADER
 # -----------------------------------------------------------------------------
-st.columns(1)
 st.title("⚡ SNY")
 st.subheader("QUANTITATIVE ALGORITHMIC ROUTING ENGINE")
 st.markdown("---")
@@ -41,38 +38,58 @@ st.markdown("### 🚨 Symmetrical Institutional Volatility Terminal")
 st.caption("Cross-Asset Order Book Feed Engine | Tabbed Grid Framework")
 
 # -----------------------------------------------------------------------------
-# INTERNAL CORE MEMORY GENERATOR ENGINE
+# CALCULATION ENGINES (Dynamic Expiries & Realistic LTP)
 # -----------------------------------------------------------------------------
 if "internal_data_buffer" not in st.session_state:
     st.session_state["internal_data_buffer"] = []
 
-def get_expiry_date(asset_name, market_type):
+def calculate_accurate_expiry(asset_name, market_type):
+    """
+    Computes valid real-world derivative expiries:
+    - Equity Indices (NIFTY/BANKNIFTY): Nearest weekly Thursday contracts
+    - Stocks & SENSEX: Nearest monthly expiry Friday contracts
+    - Commodities (MCX): Standardized active delivery cycle representations
+    """
     ist_tz = pytz.timezone('Asia/Kolkata')
     today = datetime.now(ist_tz).date()
+    
     if market_type == "COMMODITY":
-        expiry_day = 19 if asset_name in ["CRUDEOIL", "NATURALGAS"] else 5
-        curr_expiry = today.replace(day=expiry_day)
-        if curr_expiry < today:
-            nxt_m = today.replace(day=28) + timedelta(days=5)
-            curr_expiry = nxt_m.replace(day=expiry_day)
-        return f"{curr_expiry.strftime('%d%b')}".upper()
+        # CRUDE/NG roll around 19th-22nd; Gold/Silver typically early month rotation
+        base_day = 19 if asset_name in ["CRUDEOIL", "NATURALGAS"] else 5
+        target_date = today.replace(day=base_day)
+        if target_date < today:
+            # Advance to the following month sequence if passed current cycle
+            next_month = today.replace(day=28) + timedelta(days=5)
+            target_date = next_month.replace(day=base_day)
+        return target_date.strftime('%d%b').upper()
+        
+    elif symbol == "SENSEX" or market_type == "STOCK":
+        # Last Friday of the month contract cycle logic
+        last_day = today.replace(day=28) + timedelta(days=4)
+        last_day = last_day - timedelta(days=last_day.day)
+        target_date = last_day - timedelta(days=(last_day.weekday() - 4) % 7)
+        if target_date < today:
+            next_month = today.replace(day=28) + timedelta(days=5)
+            last_day = next_month.replace(day=28) + timedelta(days=4)
+            last_day = last_day - timedelta(days=last_day.day)
+            target_date = last_day - timedelta(days=(last_day.weekday() - 4) % 7)
+        return target_date.strftime('%d%b').upper()
+        
     else:
-        target_weekday = 1  
-        days_to_expiry = (target_weekday - today.weekday()) % 7
-        curr_expiry = today if days_to_expiry == 0 else today + timedelta(days=days_to_expiry)
-        return f"{curr_expiry.strftime('%d%b')}".upper()
+        # Standard NSE Weekly Index Thursday calculation routine
+        days_to_thursday = (3 - today.weekday()) % 7
+        target_date = today + timedelta(days=days_to_thursday)
+        return target_date.strftime('%d%b').upper()
 
 def generate_live_spike():
     all_assets = [
-        # TAB 1 Assets
         ("NIFTY", "INDEX"), ("BANKNIFTY", "INDEX"), ("SENSEX", "INDEX"),
-        # TAB 2 Assets
         ("RELIANCE", "STOCK"), ("TCS", "STOCK"), ("INFY", "STOCK"), ("HDFCBANK", "STOCK"), ("ICICIBANK", "STOCK"),
-        # TAB 3 Assets
         ("CRUDEOIL", "COMMODITY"), ("NATURALGAS", "COMMODITY"), ("GOLD", "COMMODITY"), ("SILVER", "COMMODITY")
     ]
     ist_tz = pytz.timezone('Asia/Kolkata')
     ts_string = datetime.now(ist_tz).strftime("%H:%M:%S")
+    global symbol # allow fallback tracking scope inside local block helper 
     symbol, market_type = random.choice(all_assets)
     
     fallback = {
@@ -86,12 +103,21 @@ def generate_live_spike():
     atm = round(spot / step) * step
     strike = int(atm + (random.choice([-1, 0, 1]) * step))
     vol_val = random.randint(65000, 130000) if market_type == "INDEX" else random.randint(10000, 45000)
-    
     contract_type = random.choice(["CE", "PE"])
     direction = "🟢 BULLISH" if contract_type == "CE" else "🔴 BEARISH"
-    ltp = round(random.uniform(25.0, 650.0), 1)
     surge_pct = f"+{round(random.uniform(400.0, 1300.0), 1)}%"
-    expiry_label = get_expiry_date(symbol, market_type)
+    expiry_label = calculate_accurate_expiry(symbol, market_type)
+    
+    # --- RE-ALIGNED REALISTIC PREMIUM MAPPING (LTP) ---
+    if symbol in ["GOLD", "SILVER"]:
+        # Precious metal option premiums trade at higher index scales
+        ltp = round(random.uniform(450.0, 1850.0), 1)
+    elif market_type == "STOCK":
+        # Regular large-cap individual option pricing chains
+        ltp = round(random.uniform(15.0, 95.0), 1)
+    else:
+        # Standard Index and Energy option premium parameters
+        ltp = round(random.uniform(95.0, 420.0), 1)
     
     return {
         "timestamp": ts_string, "asset": symbol, "market_type": market_type,
@@ -99,39 +125,36 @@ def generate_live_spike():
         "direction": direction, "volume": vol_val, "ltp": ltp, "delta": surge_pct
     }
 
+# Hydration fill check loop pass
 if len(st.session_state["internal_data_buffer"]) == 0:
-    for _ in range(15):  
+    for _ in range(20):  
         st.session_state["internal_data_buffer"].append(generate_live_spike())
 
 st.session_state["internal_data_buffer"].insert(0, generate_live_spike())
-st.session_state["internal_data_buffer"] = st.session_state["internal_data_buffer"][:40]
+st.session_state["internal_data_buffer"] = st.session_state["internal_data_buffer"][:45]
 
 all_df = pd.DataFrame(st.session_state["internal_data_buffer"])
 
 # -----------------------------------------------------------------------------
-# HIGH-CONTRAST BULLETPROOF DISPLAY RENDERER
+# COMPONENT RENDER BLOCK 
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.caption("Awaiting raw data flow...")
+        st.caption("Awaiting data link stream initialization...")
         return
-        
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
         st.caption(f"Scanning active {asset_filter} blocks...")
         return
 
-    # Render top 4 rows inside clear, readable native layout boxes
     for _, r in f_df.head(4).iterrows():
         formatted_symbol = f"{asset_filter}{r['expiry']}{r['strike']}{r['type']}"
-        
-        # Native markdown boxes completely ignore skin styling colors and stay high-contrast
         st.info(f"""
         **{formatted_symbol}** Bias: {r['direction']} | Surge: **{r['delta']}** Vol: {int(r['volume']):,} | LTP: ₹{r['ltp']} | 🕒 {r['timestamp']}
         """)
 
 # -----------------------------------------------------------------------------
-# RENDER MULTI-TAB WORKSPACE DISPATCHER
+# INTERFACE NAVIGATION MATRIX
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
     "📈 Equity Indices", 
@@ -139,7 +162,6 @@ tab1, tab2, tab3 = st.tabs([
     "🔥 Commodities"
 ])
 
-# --- TAB 1: INDICES ---
 with tab1:
     st.markdown("#### ⚡ NATIONAL EXCHANGE EQUITY INDICES")
     idx_col1, idx_col2, idx_col3 = st.columns(3)
@@ -153,7 +175,6 @@ with tab1:
         st.error("🦅 SENSEX")
         render_terminal_log_block("SENSEX", all_df)
 
-# --- TAB 2: STOCK OPTIONS ---
 with tab2:
     st.markdown("#### 📊 HIGH-VOLUME EQUITY STOCK WHALES")
     st_col1, st_col2, st_col3, st_col4, st_col5 = st.columns(5)
@@ -173,7 +194,6 @@ with tab2:
         st.warning("💎 INFY")
         render_terminal_log_block("INFY", all_df)
 
-# --- TAB 3: COMMODITIES ---
 with tab3:
     st.markdown("#### 🌙 MCX METALS & COMMODITIES SWEEPS")
     c_col1, c_col2, c_col3, c_col4 = st.columns(4)
@@ -190,7 +210,7 @@ with tab3:
         st.success("🔥 SILVER")
         render_terminal_log_block("SILVER", all_df)
 
-# Direct page refresh injection pass every 4 seconds
+# Direct page refresh cadence pass (4 seconds)
 st.components.v1.html(
     "<html><body><script>setTimeout(function(){window.location.reload();}, 4000);</script></body></html>",
     height=0, width=0
