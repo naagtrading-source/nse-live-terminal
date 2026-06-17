@@ -4,11 +4,12 @@ import os
 import pytz
 import pyotp
 import random
-import time
+import requests
+import json
 from datetime import datetime
 
 st.set_page_config(
-    page_title="Symmetrical Institutional Flow Terminal",
+    page_title="SNY Institutional Flow Terminal",
     layout="wide",
     page_icon="🚨"
 )
@@ -37,103 +38,6 @@ st.caption("Hybrid Core Engine | Real-Time Live Streaming & Automated Off-Hours 
 st.markdown("---")
 
 # ─────────────────────────────────────────────
-# BROKER CONNECTION
-# Cached with TTL=1800s (30 min) — TOTP is only needed at login,
-# the session stays valid. Prevents reconnecting on every 5s reload.
-# ─────────────────────────────────────────────
-@st.cache_resource(ttl=1800, show_spinner=False)
-def initialize_broker_connection():
-    required_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC",
-                     "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
-    missing = [k for k in required_keys if not os.environ.get(k)]
-    if missing:
-        return None, f"MISSING ENV VARS: {', '.join(missing)}", []
-
-    logs = []
-    try:
-        from neo_api_client import NeoAPI
-        logs.append("neo_api_client imported OK")
-
-        consumer_key = os.environ.get("KOTAK_CONSUMER_KEY")
-        api = NeoAPI(environment='prod', consumer_key=consumer_key)
-        logs.append(f"NeoAPI created (key: ...{consumer_key[-6:]})")
-
-        totp_secret = os.environ.get("KOTAK_TOTP_SECRET").replace(" ", "")
-        totp_token = pyotp.TOTP(totp_secret).now()
-        logs.append(f"TOTP: {totp_token}")
-
-        # Normalise mobile → exactly 10 digits
-        mobile_raw = os.environ.get("KOTAK_MOBILE", "").strip().lstrip("+")
-        if mobile_raw.startswith("91") and len(mobile_raw) == 12:
-            mobile_raw = mobile_raw[2:]
-        elif mobile_raw.startswith("0") and len(mobile_raw) == 11:
-            mobile_raw = mobile_raw[1:]
-        logs.append(f"Mobile: ...{mobile_raw[-4:]} ({len(mobile_raw)} digits)")
-
-        ucc = os.environ.get("KOTAK_UCC")
-        login_resp = api.totp_login(mobile_number=mobile_raw, ucc=ucc, totp=totp_token)
-        # Log only the error/success summary — not the full response (saves memory)
-        if isinstance(login_resp, dict) and login_resp.get('error'):
-            logs.append(f"LOGIN ERROR: {str(login_resp['error'])[:200]}")
-            return None, f"LOGIN_FAILED", logs
-        logs.append(f"totp_login: OK")
-
-        # Extract Auth + SID to pass into validate
-        mpin = os.environ.get("KOTAK_MPIN")
-        auth_token, sid = None, None
-        if isinstance(login_resp, dict):
-            data = login_resp.get('data', login_resp)
-            auth_token = data.get('Auth') or data.get('auth') or data.get('token')
-            sid = data.get('SID') or data.get('sid') or data.get('Sid')
-
-        try:
-            if auth_token and sid:
-                validate_resp = api.totp_validate(mpin=mpin, Auth=auth_token, sid=sid)
-            elif auth_token:
-                validate_resp = api.totp_validate(mpin=mpin, Auth=auth_token)
-            else:
-                validate_resp = api.totp_validate(mpin=mpin)
-        except TypeError:
-            validate_resp = api.totp_validate(mpin=mpin)
-
-        if isinstance(validate_resp, dict) and validate_resp.get('error'):
-            logs.append(f"VALIDATE ERROR: {str(validate_resp['error'])[:200]}")
-            return None, "VALIDATE_FAILED", logs
-
-        logs.append("totp_validate: OK")
-        return api, "OK", logs
-
-    except ImportError as e:
-        return None, f"IMPORT_ERROR: {e}", logs
-    except Exception as e:
-        logs.append(f"Exception: {type(e).__name__}: {str(e)[:200]}")
-        return None, f"AUTH_ERROR: {type(e).__name__}", logs
-
-
-api_client, api_status, auth_logs = initialize_broker_connection()
-
-# ── Status banner ────────────────────────────
-if api_status == "OK":
-    st.success("🟢 Broker Connected — Live data active")
-elif "MISSING" in api_status:
-    st.warning(f"⚠️ {api_status}")
-else:
-    st.error(f"🔴 {api_status}")
-
-# ── Lightweight diagnostic (text only — no st.json) ──
-with st.expander("🔧 Diagnostic Log", expanded=(api_status != "OK")):
-    env_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC",
-                "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
-    for k in env_keys:
-        v = os.environ.get(k)
-        if v:
-            st.success(f"✅ {k} ({len(v)} chars)")
-        else:
-            st.error(f"❌ {k} MISSING")
-    for log in auth_logs:
-        st.code(log)
-
-# ─────────────────────────────────────────────
 # ASSET CONFIG
 # ─────────────────────────────────────────────
 ASSET_ROUTING = {
@@ -146,89 +50,196 @@ ASSET_ROUTING = {
     "GOLD":      {"fo_seg": "mcx_fo", "is_fut": True,  "step": 100, "base": 72800, "exp": "30JUN26"},
 }
 
+BASE_URL = "https://gw-napi.kotaksecurities.com"
+
 # ─────────────────────────────────────────────
-# SCRIP CACHE — fetched once per session, not every 5s reload
-# Searching scrip is expensive (large response). Cache by symbol.
+# AUTH — direct HTTP, no SDK, cached 25 min
 # ─────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_scrip_records(fo_seg, symbol):
-    """Fetch and cache scrip list for a symbol. TTL=1hr."""
-    if api_client is None:
-        return []
+@st.cache_resource(ttl=1500, show_spinner=False)
+def get_session():
+    """
+    Returns (headers, sid, server_id, error_msg)
+    Uses raw HTTP so the neo_api_client SDK (heavy) is never imported.
+    """
+    ck  = os.environ.get("KOTAK_CONSUMER_KEY", "")
+    mob = os.environ.get("KOTAK_MOBILE", "").strip().lstrip("+")
+    if mob.startswith("91") and len(mob) == 12:
+        mob = mob[2:]
+    elif mob.startswith("0") and len(mob) == 11:
+        mob = mob[1:]
+    ucc    = os.environ.get("KOTAK_UCC", "")
+    mpin   = os.environ.get("KOTAK_MPIN", "")
+    secret = os.environ.get("KOTAK_TOTP_SECRET", "").replace(" ", "")
+
+    if not all([ck, mob, ucc, mpin, secret]):
+        return None, None, None, "Missing env vars"
+
+    totp = pyotp.TOTP(secret).now()
+
+    # Step 1 — TOTP login
     try:
-        res = api_client.search_scrip(exchange_segment=fo_seg, symbol=symbol)
-        if isinstance(res, dict):
-            return res.get('data', []) or res.get('result', []) or []
-        return res if isinstance(res, list) else []
+        r1 = requests.post(
+            f"{BASE_URL}/login/1.0/login/v2/validate",
+            headers={
+                "accept":       "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {ck}",
+            },
+            json={
+                "mobileNumber": mob,
+                "ucc":          ucc,
+                "totp":         totp,
+            },
+            timeout=15,
+        )
+        d1 = r1.json()
+    except Exception as e:
+        return None, None, None, f"Login HTTP error: {e}"
+
+    if r1.status_code != 200 or d1.get("error"):
+        return None, None, None, f"Login failed: {json.dumps(d1)[:300]}"
+
+    data1   = d1.get("data", d1)
+    auth    = data1.get("Auth") or data1.get("auth") or data1.get("token", "")
+    sid     = data1.get("SID")  or data1.get("sid",  "")
+    srv_id  = data1.get("ServerID") or data1.get("serverId", "")
+
+    # Step 2 — MPIN validate
+    try:
+        r2 = requests.post(
+            f"{BASE_URL}/login/1.0/login/v2/totp/validate",
+            headers={
+                "accept":        "application/json",
+                "Content-Type":  "application/json",
+                "Authorization": f"Bearer {ck}",
+                "Auth":          auth,
+                "sid":           sid,
+            },
+            json={"mpin": mpin},
+            timeout=15,
+        )
+        d2 = r2.json()
+    except Exception as e:
+        return None, None, None, f"Validate HTTP error: {e}"
+
+    if r2.status_code != 200 or d2.get("error"):
+        return None, None, None, f"Validate failed: {json.dumps(d2)[:300]}"
+
+    data2     = d2.get("data", d2)
+    final_tok = data2.get("token") or data2.get("Token") or data2.get("accessToken") or auth
+    final_sid = data2.get("SID") or data2.get("sid") or sid
+
+    headers = {
+        "accept":        "application/json",
+        "Content-Type":  "application/json",
+        "Authorization": f"Bearer {ck}",
+        "Auth":          final_tok,
+        "sid":           final_sid,
+        "neo-fin-key":   f"neotradeapi{final_sid}",
+        "Sid":           final_sid,
+    }
+    return headers, final_sid, srv_id, None
+
+
+# ─────────────────────────────────────────────
+# API CALLS — raw HTTP
+# ─────────────────────────────────────────────
+def api_search_scrip(headers, exchange_segment, symbol):
+    """Cache scrip records per symbol — only fetched once per hour."""
+    try:
+        r = requests.get(
+            f"{BASE_URL}/market-data/oms/1.0/scripmaster/search",
+            params={"exchSeg": exchange_segment, "symbol": symbol, "series": ""},
+            headers=headers,
+            timeout=10,
+        )
+        d = r.json()
+        if isinstance(d, dict):
+            return d.get("data", []) or d.get("result", []) or []
+        return d if isinstance(d, list) else []
     except Exception:
         return []
 
-# ─────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────
+
+def api_live_quote(headers, token_id, exchange_segment):
+    try:
+        r = requests.post(
+            f"{BASE_URL}/market-data/oms/1.0/quotes",
+            headers=headers,
+            json={
+                "quote_type": "ltp",
+                "Seg":        exchange_segment,
+                "Exch":       exchange_segment.split("_")[0].upper(),
+                "ExchType":   exchange_segment.split("_")[1].upper() if "_" in exchange_segment else "FO",
+                "symbol":     str(token_id),
+                "Depth":      "10",
+                "mode":       "LTP",
+            },
+            timeout=8,
+        )
+        d = r.json()
+        items = d.get("data", d) if isinstance(d, dict) else d
+        if isinstance(items, list) and items:
+            return items[0]
+        if isinstance(items, dict):
+            return items
+    except Exception:
+        pass
+    return {}
+
+
 def safe_ltp(q):
-    for key in ('last_traded_price', 'ltp', 'lastPrice', 'c', 'close',
-                'Last_Traded_Price', 'LTP', 'last_price'):
-        val = q.get(key)
-        if val is not None and val != '':
+    for k in ('ltp', 'last_traded_price', 'lastPrice', 'LTP', 'c', 'close'):
+        v = q.get(k)
+        if v is not None and v != '':
             try:
-                f = float(val)
+                f = float(v)
                 if f > 0:
                     return f
             except (ValueError, TypeError):
                 continue
     return 0.0
 
-def safe_volume(q):
-    for key in ('volume', 'tradedQuantity', 'vol', 'totalTradedVolume', 'ltq'):
-        val = q.get(key)
-        if val is not None:
+
+def safe_vol(q):
+    for k in ('volume', 'vol', 'tradedQuantity', 'totalTradedVolume', 'ltq'):
+        v = q.get(k)
+        if v is not None:
             try:
-                return int(float(val))
+                return int(float(v))
             except (ValueError, TypeError):
                 continue
     return 0
 
-def fetch_ltp(token_id, segment):
-    try:
-        q = api_client.get_live_quotes([{
-            "instrument_token": str(token_id),
-            "exchange_segment": segment
-        }])
-        if isinstance(q, list) and q:
-            return safe_ltp(q[0]), safe_volume(q[0])
-        if isinstance(q, dict):
-            data = q.get('data', [])
-            if data:
-                return safe_ltp(data[0]), safe_volume(data[0])
-    except Exception:
-        pass
-    return 0.0, 0
 
-def normalize_opt(raw):
-    raw = str(raw).strip().upper()
-    if raw in ('CE', 'CALL', 'C'):
+def norm_opt(raw):
+    s = str(raw).strip().upper()
+    if s in ('CE', 'CALL', 'C'):
         return 'CE'
-    if raw in ('PE', 'PUT', 'P'):
+    if s in ('PE', 'PUT', 'P'):
         return 'PE'
     return None
 
-def expiry_in(trd_sym, exp_tag):
-    return exp_tag.upper() in str(trd_sym).upper()
 
-def get_token(item):
-    for k in ('pSymbol', 'token', 'instrument_token', 'Token'):
+def expiry_in(sym, tag):
+    return tag.upper() in sym.upper()
+
+
+def get_tok(item):
+    for k in ('pSymbol', 'token', 'instrument_token', 'Token', 'scripToken'):
         v = item.get(k)
         if v is not None:
             return v
     return None
 
-def get_trd_sym(item):
-    for k in ('pTrdSymbol', 'trdSym', 'tradingSymbol'):
+
+def get_sym(item):
+    for k in ('pTrdSymbol', 'trdSym', 'tradingSymbol', 'Trading_Symbol'):
         v = item.get(k)
         if v:
             return str(v).upper()
     return ""
+
 
 def get_strike(item):
     for k in ('pStrikePrice', 'strkPrc', 'strikePrice', 'strike_price'):
@@ -236,58 +247,68 @@ def get_strike(item):
         if v is not None:
             try:
                 return int(float(v))
-            except (ValueError, TypeError):
+            except Exception:
                 continue
     return None
 
-# ─────────────────────────────────────────────
-# LIVE DATA FETCH  (only quotes are fetched on each 10s refresh)
-# ─────────────────────────────────────────────
-def capture_market_state():
-    ist_tz = pytz.timezone('Asia/Kolkata')
-    ts = datetime.now(ist_tz).strftime("%H:%M:%S")
-    snapshot = []
-    live = False
 
-    if api_client is None:
-        return snapshot, False
+# ─────────────────────────────────────────────
+# SCRIP CACHE  (TTL 1 hour — large data, changes rarely)
+# ─────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_scrip(exchange_segment, symbol, _headers_key):
+    """_headers_key is a dummy arg to bust cache on new session."""
+    headers, _, _, err = get_session()
+    if err or headers is None:
+        return []
+    return api_search_scrip(headers, exchange_segment, symbol)
+
+
+# ─────────────────────────────────────────────
+# MARKET DATA CAPTURE
+# ─────────────────────────────────────────────
+def capture_market_state(headers, session_id):
+    ist = pytz.timezone('Asia/Kolkata')
+    ts  = datetime.now(ist).strftime("%H:%M:%S")
+    snap, live = [], False
 
     for symbol, meta in ASSET_ROUTING.items():
-        exp_tag = meta["exp"]
+        exp_tag    = meta["exp"]
         underlying = 0.0
 
-        # Use cached scrip records — not re-fetched every reload
-        fo_records = get_scrip_records(meta["fo_seg"], symbol)
+        fo_records = cached_scrip(meta["fo_seg"], symbol, session_id)
 
-        # ── Resolve underlying price ─────────────────────────────────
+        # ── Underlying price ─────────────────────────────────────────
         if meta["is_fut"]:
             for item in fo_records:
-                trd = get_trd_sym(item)
-                if "FUT" in trd and expiry_in(trd, exp_tag):
-                    tok = get_token(item)
+                s = get_sym(item)
+                if "FUT" in s and expiry_in(s, exp_tag):
+                    tok = get_tok(item)
                     if tok:
-                        ltp, _ = fetch_ltp(tok, meta["fo_seg"])
+                        q = api_live_quote(headers, tok, meta["fo_seg"])
+                        ltp = safe_ltp(q)
                         if ltp > 0:
                             underlying = ltp
                             break
-            # Fallback: any FUT
             if underlying <= 0:
                 for item in fo_records:
-                    if "FUT" in get_trd_sym(item):
-                        tok = get_token(item)
+                    if "FUT" in get_sym(item):
+                        tok = get_tok(item)
                         if tok:
-                            ltp, _ = fetch_ltp(tok, meta["fo_seg"])
+                            q = api_live_quote(headers, tok, meta["fo_seg"])
+                            ltp = safe_ltp(q)
                             if ltp > 0:
                                 underlying = ltp
                                 break
         else:
-            cm_records = get_scrip_records(meta["cm_seg"], symbol)
+            cm_records = cached_scrip(meta["cm_seg"], symbol, session_id)
             for item in cm_records:
-                trd = get_trd_sym(item)
-                if trd in (f"{symbol}-EQ", symbol, f"{symbol}EQ"):
-                    tok = get_token(item)
+                s = get_sym(item)
+                if s in (f"{symbol}-EQ", symbol, f"{symbol}EQ"):
+                    tok = get_tok(item)
                     if tok:
-                        ltp, _ = fetch_ltp(tok, meta["cm_seg"])
+                        q = api_live_quote(headers, tok, meta["cm_seg"])
+                        ltp = safe_ltp(q)
                         if ltp > 0:
                             underlying = ltp
                             break
@@ -295,84 +316,107 @@ def capture_market_state():
         if underlying <= 0:
             continue
 
-        # ── ATM strikes ──────────────────────────────────────────────
-        atm = int(round(underlying / meta["step"]) * meta["step"])
+        # ── ATM ladder ───────────────────────────────────────────────
+        atm     = int(round(underlying / meta["step"]) * meta["step"])
         strikes = {atm - meta["step"], atm, atm + meta["step"]}
 
-        # ── Walk option chain ────────────────────────────────────────
+        # ── Option chain scan ────────────────────────────────────────
         for item in fo_records:
             try:
-                trd = get_trd_sym(item)
-                if not expiry_in(trd, exp_tag):
+                s = get_sym(item)
+                if not expiry_in(s, exp_tag):
                     continue
-                opt = normalize_opt(item.get("pOptionType", item.get("optTp", "")))
+                opt = norm_opt(item.get("pOptionType", item.get("optTp", "")))
                 if opt is None:
                     continue
                 strike = get_strike(item)
                 if strike not in strikes:
                     continue
-                tok = get_token(item)
+                tok = get_tok(item)
                 if not tok:
                     continue
-                ltp, vol = fetch_ltp(tok, meta["fo_seg"])
+                q   = api_live_quote(headers, tok, meta["fo_seg"])
+                ltp = safe_ltp(q)
                 if ltp <= 0:
                     continue
-                snapshot.append({
+                snap.append({
                     "timestamp": ts, "asset": symbol,
-                    "formatted_symbol": trd,
+                    "formatted_symbol": s,
                     "direction": "CALL ACCUMULATION" if opt == "CE" else "PUT DISTRIBUTION",
-                    "volume": vol, "ltp": ltp,
-                    "underlying": underlying, "status": "🟢 LIVE"
+                    "volume": safe_vol(q), "ltp": ltp,
+                    "underlying": underlying, "status": "🟢 LIVE",
                 })
                 live = True
             except Exception:
                 continue
 
-    return snapshot, live
+    return snap, live
 
 
 def fallback_snapshot():
-    ist_tz = pytz.timezone('Asia/Kolkata')
-    ts = datetime.now(ist_tz).strftime("%H:%M:%S")
+    ist = pytz.timezone('Asia/Kolkata')
+    ts  = datetime.now(ist).strftime("%H:%M:%S")
     rows = []
-    for symbol, meta in ASSET_ROUTING.items():
+    for sym, meta in ASSET_ROUTING.items():
         base = meta["base"] + round(random.uniform(-15, 15), 1)
-        atm = int(round(base / meta["step"]) * meta["step"])
+        atm  = int(round(base / meta["step"]) * meta["step"])
         for strike in [atm - meta["step"], atm, atm + meta["step"]]:
             for opt in ["CE", "PE"]:
                 ltp = (round(random.uniform(40, 260), 1)
-                       if symbol in ("NIFTY", "BANKNIFTY")
+                       if sym in ("NIFTY", "BANKNIFTY")
                        else round(random.uniform(6, 65), 1))
                 rows.append({
-                    "timestamp": ts, "asset": symbol,
-                    "formatted_symbol": f"{symbol}{meta['exp']}{strike}{opt}",
+                    "timestamp": ts, "asset": sym,
+                    "formatted_symbol": f"{sym}{meta['exp']}{strike}{opt}",
                     "direction": "CALL ACCUMULATION" if opt == "CE" else "PUT DISTRIBUTION",
                     "volume": random.randint(15000, 125000),
                     "ltp": ltp, "underlying": base,
-                    "status": "🌙 OFF-HOURS FALLBACK"
+                    "status": "🌙 OFF-HOURS FALLBACK",
                 })
     return rows
 
+
 # ─────────────────────────────────────────────
-# RUN
+# INIT
+# ─────────────────────────────────────────────
+headers, sid, srv_id, auth_err = get_session()
+
+if auth_err:
+    st.error(f"🔴 Auth failed: {auth_err}")
+else:
+    st.success("🟢 Broker Connected — Live data active")
+
+with st.expander("🔧 Diagnostic", expanded=bool(auth_err)):
+    env_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
+    for k in env_keys:
+        v = os.environ.get(k)
+        st.success(f"✅ {k} ({len(v)} chars)") if v else st.error(f"❌ {k} MISSING")
+    if auth_err:
+        st.error(f"Auth error: {auth_err}")
+    else:
+        st.success(f"Session OK | SID: ...{str(sid)[-6:]}")
+
+# ─────────────────────────────────────────────
+# DATA
 # ─────────────────────────────────────────────
 if "buffer" not in st.session_state:
     st.session_state["buffer"] = []
 
-snapshot, got_live = capture_market_state()
-if got_live:
-    st.session_state["buffer"] = snapshot
+if headers:
+    snap, got_live = capture_market_state(headers, str(sid))
+    if got_live:
+        st.session_state["buffer"] = snap
+    elif not st.session_state["buffer"]:
+        st.session_state["buffer"] = fallback_snapshot()
 elif not st.session_state["buffer"]:
-    # Only generate fallback if we have nothing stored yet
     st.session_state["buffer"] = fallback_snapshot()
 
 all_df = pd.DataFrame(st.session_state["buffer"])
-
 ist_now = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
-live_count = len(all_df[all_df['status'].str.contains('LIVE', na=False)]) if not all_df.empty else 0
+live_n  = len(all_df[all_df['status'].str.contains('LIVE', na=False)]) if not all_df.empty else 0
 st.caption(
-    f"📦 Rows: {len(all_df)} | 🟢 Live: {live_count} | "
-    f"🌙 Fallback: {len(all_df) - live_count} | IST: {ist_now}"
+    f"📦 Rows: {len(all_df)} | 🟢 Live: {live_n} | "
+    f"🌙 Fallback: {len(all_df) - live_n} | IST: {ist_now}"
 )
 
 # ─────────────────────────────────────────────
@@ -429,8 +473,8 @@ with tab3:
         st.success("✨ GOLD")
         render_block("GOLD", all_df)
 
-# Auto-refresh every 10s (was 5s — halved to reduce memory pressure)
+# Refresh every 15s — gives enough time for quotes to complete
 st.components.v1.html(
-    "<script>setTimeout(function(){window.location.reload();}, 10000);</script>",
+    "<script>setTimeout(function(){window.location.reload();}, 15000);</script>",
     height=0, width=0
 )
