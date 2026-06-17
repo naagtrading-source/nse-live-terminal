@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
-import db_provider
+import sqlite3
+from kotak_auth import get_kotak_client
 
 st.set_page_config(page_title="High Density Zones", layout="wide", page_icon="🎯")
 
@@ -20,57 +21,71 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🎯 High-Density Institutional Volume Zones")
-st.caption("Real-Time Price Range Absorption Dashboard | Tracking Symmetrical Institutional Footprints")
+st.caption("Real-Time Price Range Absorption Dashboard | Live Active Kotak Feed Processing Matrix")
 
-# Run the central background loop to stream entries continuously
-db_provider.run_automated_generation_cycle()
-df = db_provider.load_ledger_from_db()
+DB_FILE = "terminal_history.db"
 
-if df.empty:
-    st.info("⏳ Awaiting strategic market data spikes... Keep the window active to route data streams.")
-else:
-    st.write("### 🚀 Live Trade Configuration Blocks")
-    
-    for asset, group in df.groupby('asset'):
-        recent = group.head(10)
-        total_vol = int(recent['volume'].sum())
+def load_ledger_from_db():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
+
+@st.fragment(run_every=10)
+def render_zones_dashboard():
+    df = load_ledger_from_db()
+
+    if df.empty:
+        st.info("⏳ Awaiting strategic market data spikes... Stream tracking nodes remain connected.")
+    else:
+        st.write("### 🚀 Live Trade Configuration Blocks")
         
-        # Pull out raw array states to enforce perfect numerical presentation
-        strikes = [int(x) for x in recent['Target Strike'].unique()]
-        
-        if len(strikes) <= 2 and total_vol > 50000:
-            is_pump = "Call Buying" in recent['Quadrant'].values or "Put Writing" in recent['Quadrant'].values
-            b_class = "badge-pump" if is_pump else "badge-dump"
-            b_text = "🟢 PUMP NODE (ACCUMULATION FLOOR)" if is_pump else "🔴 DUMP NODE (SUPPLY CEILING)"
-            b_color = "#2ebd85" if is_pump else "#f6465d"
+        for asset, group in df.groupby('asset'):
+            recent = group.head(10)
+            total_vol = int(recent['volume'].sum())
             
-            opt_ltp = float(recent['ltp'].iloc[0])
-            vwap_anchor = round(opt_ltp, 1)
+            # FIXED: Column mapping standardized to lowercase 'strike'
+            strikes = [int(x) for x in recent['strike'].unique()]
             
-            if is_pump:
+            if len(strikes) <= 3 and total_vol > 10000:
+                quadrants_seen = recent['quadrant'].astype(str).tolist()
+                is_pump = any("Buying" in q or "Writing" in q for q in quadrants_seen)
+                
+                b_class = "badge-pump" if is_pump else "badge-dump"
+                b_text = "🟢 PUMP NODE (ACCUMULATION FLOOR)" if is_pump else "🔴 DUMP NODE (SUPPLY CEILING)"
+                b_color = "#2ebd85" if is_pump else "#f6465d"
+                
+                opt_ltp = float(recent['ltp'].iloc[0])
+                vwap_anchor = round(opt_ltp, 1)
+                
                 entry_zone = f"{vwap_anchor}"
-                stop_loss = round(vwap_anchor * 0.84, 1)
-                take_profit = round(vwap_anchor * 1.40, 1)
-                action_plan = f"Institutions are absorbing supply at Strike {strikes[0]}. Look to place entry limit orders exactly as the price retests the cluster floor."
-            else:
-                entry_zone = f"{vwap_anchor}"
-                stop_loss = round(vwap_anchor * 1.14, 1)
-                take_profit = round(vwap_anchor * 0.55, 1)
-                action_plan = f"Institutions are distribution inventory at Strike {strikes[0]}. Look for short setups or avoid long exposure under this supply ceiling."
+                if is_pump:
+                    stop_loss = round(vwap_anchor * 0.84, 1)
+                    take_profit = round(vwap_anchor * 1.40, 1)
+                    action_plan = f"Institutions are absorbing supply at Strike {strikes[0]}. Look to place entry limit orders exactly as the price retests the cluster floor."
+                else:
+                    stop_loss = round(vwap_anchor * 1.14, 1)
+                    take_profit = round(vwap_anchor * 0.55, 1)
+                    action_plan = f"Institutions are distributing inventory at Strike {strikes[0]}. Look for short setups or avoid long exposure under this supply ceiling."
 
-            st.markdown(f"""
-            <div class='zone-card' style='border-left: 5px solid {b_color};'>
-                <div class='zone-header'>
-                    <div class='asset-name'>🔍 {asset} PREMIUM MATRIX</div>
-                    <span class='{b_class}'>{b_text}</span>
+                st.markdown(f"""
+                <div class='zone-card' style='border-left: 5px solid {b_color};'>
+                    <div class='zone-header'>
+                        <div class='asset-name'>🔍 {asset} PREMIUM MATRIX</div>
+                        <span class='{b_class}'>{b_text}</span>
+                    </div>
+                    <div class='desc-text'><b>Execution Strategy:</b> {action_plan}</div>
+                    <div class='row g-2'>
+                        <div class='col-md-3'><div class='stat-box'><div class='stat-lbl'>Cluster Strike Area</div><div class='stat-val' style='color:#fff;'>{strikes[0]}</div></div></div>
+                        <div class='col-md-3'><div class='stat-box' style='border-color:{b_color};'><div class='stat-lbl' style='color:{b_color}; font-weight:700;'>Limit Entry VWAP</div><div class='stat-val' style='color:#fff;'>{entry_zone}</div></div></div>
+                        <div class='col-md-3'><div class='stat-box'><div class='stat-lbl'>Invalidation Line (SL)</div><div class='stat-val' style='color:#f6465d;'>{stop_loss}</div></div></div>
+                        <div class='col-md-3'><div class='stat-box'><div class='stat-lbl'>Target Projection (TP)</div><div class='stat-val' style='color:#ff9f43;'>{take_profit}</div></div></div>
+                    </div>
+                    <p style='font-size:0.72rem; color:#666; margin:8px 0 0 0; text-align:right;'>Accumulated Block Volume: {total_vol:,} lots | Last Scan: {recent['timestamp'].iloc[0]}</p>
                 </div>
-                <div class='desc-text'><b>Execution Strategy:</b> {action_plan}</div>
-                <div class='row g-2'>
-                    <div class='col-md-3'><div class='stat-box'><div class='stat-lbl'>Cluster Strike Area</div><div class='stat-val' style='color:#fff;'>{strikes[0]}</div></div></div>
-                    <div class='col-md-3'><div class='stat-box' style='border-color:{b_color};'><div class='stat-lbl' style='color:{b_color}; font-weight:700;'>Limit Entry VWAP</div><div class='stat-val' style='color:#fff;'>{entry_zone}</div></div></div>
-                    <div class='col-md-3'><div class='stat-box'><div class='stat-lbl'>Invalidation Line (SL)</div><div class='stat-val' style='color:#f6465d;'>{stop_loss}</div></div></div>
-                    <div class='col-md-3'><div class='stat-box'><div class='stat-lbl'>Target Projection (TP)</div><div class='stat-val' style='color:#ff9f43;'>{take_profit}</div></div></div>
-                </div>
-                <p style='font-size:0.72rem; color:#666; margin:8px 0 0 0; text-align:right;'>Accumulated Block Volume: {total_vol:,} lots | Last Scan: {recent['timestamp'].iloc[0]}</p>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+
+render_zones_dashboard()
