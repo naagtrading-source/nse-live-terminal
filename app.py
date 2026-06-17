@@ -77,22 +77,62 @@ def get_api():
             d = r1.get("data", r1)
             auth = d.get("Auth") or d.get("auth") or d.get("token")
             sid  = d.get("SID")  or d.get("sid")  or d.get("Sid")
-        logs.append(f"auth={'set' if auth else 'MISSING'} sid={'set' if sid else 'MISSING'}")
+        # Log ALL keys in login response so we can see exact field names
+        if isinstance(r1, dict):
+            logs.append(f"r1 keys: {list(r1.keys())}")
+            d_raw = r1.get("data", r1)
+            if isinstance(d_raw, dict):
+                logs.append(f"r1.data keys: {list(d_raw.keys())}")
+                logs.append(f"r1.data values: {str(d_raw)[:400]}")
+        logs.append(f"auth={'set:'+str(auth)[:20] if auth else 'MISSING'} sid={'set:'+str(sid)[:20] if sid else 'MISSING'}")
+
+        # Neo v2 totp_validate needs Auth+Sid passed INTO the api object's session,
+        # not as keyword args — set them on the api object directly first
+        if auth:
+            try: api.configuration.auth  = auth
+            except: pass
+            try: api._auth   = auth
+            except: pass
+            try: api.Auth    = auth
+            except: pass
+        if sid:
+            try: api.configuration.sid   = sid
+            except: pass
+            try: api._sid    = sid
+            except: pass
+            try: api.sid     = sid
+            except: pass
 
         with mock.patch("streamlit.success", dummy), \
              mock.patch("streamlit.error",   dummy), \
              mock.patch("streamlit.warning", dummy), \
              mock.patch("streamlit.info",    dummy), \
              mock.patch("streamlit.write",   dummy):
-            try:
-                if auth and sid:
-                    r2 = api.totp_validate(mpin=mpin, Auth=auth, sid=sid)
-                elif auth:
-                    r2 = api.totp_validate(mpin=mpin, Auth=auth)
-                else:
-                    r2 = api.totp_validate(mpin=mpin)
-            except TypeError:
-                r2 = api.totp_validate(mpin=mpin)
+            # Try every known signature combination for v2
+            r2 = None
+            for attempt in [
+                lambda: api.totp_validate(mpin=mpin, Auth=auth, sid=sid),
+                lambda: api.totp_validate(mpin=mpin, Auth=auth, Sid=sid),
+                lambda: api.totp_validate(mpin=mpin, auth=auth, sid=sid),
+                lambda: api.totp_validate(mpin=mpin),
+                lambda: api.totp_validate(mpin),
+            ]:
+                try:
+                    r2 = attempt()
+                    # If it returned an error about missing Auth/Sid, try next
+                    if isinstance(r2, dict):
+                        errs = r2.get("error", [])
+                        missing = any("Missing" in str(e) for e in errs)
+                        if missing:
+                            logs.append(f"⚠️ attempt failed: {str(r2)[:100]}")
+                            r2 = None
+                            continue
+                    break
+                except Exception as e:
+                    logs.append(f"⚠️ validate attempt exc: {e}")
+                    continue
+            if r2 is None:
+                return None, "All totp_validate attempts failed", logs
 
         logs.append(f"✅ totp_validate type={type(r2).__name__} → {str(r2)[:250]}")
 
