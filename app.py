@@ -3,6 +3,7 @@ import pandas as pd
 import sqlite3
 import os
 import re
+import pytz
 from datetime import datetime
 import streamlit.components.v1 as components
 from kotak_auth import get_kotak_client
@@ -61,13 +62,15 @@ if login_status != "SUCCESS":
 # -----------------------------------------------------------------------------
 def fetch_live_market_data():
     rows = []
-    ts = datetime.now().strftime("%H:%M:%S")
+    # FIXED: Set explicit Asia/Kolkata timezone to keep time accurate on Render cloud servers
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    ts = datetime.now(ist_tz).strftime("%H:%M:%S")
     
     if client is not None:
         try:
-            # Query the Scrip Master search dynamically for current weekly F&O active elements
-            search_nifty = client.scrip_search(symbol="NIFTY", exchange_segment="nse_fo")
-            search_bank = client.scrip_search(symbol="BANKNIFTY", exchange_segment="nse_fo")
+            # FIXED: Correct Kotak Neo SDK function name 'search_scrip'
+            search_nifty = client.search_scrip(symbol="NIFTY", exchange_segment="nse_fo")
+            search_bank = client.search_scrip(symbol="BANKNIFTY", exchange_segment="nse_fo")
             
             combined_scrips = []
             if isinstance(search_nifty, list): combined_scrips.extend(search_nifty[:4])
@@ -76,7 +79,6 @@ def fetch_live_market_data():
             if isinstance(search_bank, list): combined_scrips.extend(search_bank[:4])
             elif isinstance(search_bank, dict): combined_scrips.extend(search_bank.get('data', [])[:4])
             
-            # Construct parameters based on live active token elements
             token_params = []
             token_meta = {}
             for scrip in combined_scrips:
@@ -112,12 +114,12 @@ def fetch_live_market_data():
         except Exception as api_err:
             print(f"Live scrip lookup slip notice: {api_err}")
             
-    # If API is completely offline, generate updating time data for visual alignment validation
+    # Fallback simulation logs only run if the API connection drops or market is completely closed
     if not rows:
         rows = [
-            {'timestamp': ts, 'asset': 'NIFTY', 'strike': 23400, 'type': 'CE', 'quadrant': 'Call Buying Flow', 'volume': 49200, 'ltp': 148.2, 'direction': 'BULLISH'},
-            {'timestamp': ts, 'asset': 'NIFTY', 'strike': 23400, 'type': 'PE', 'quadrant': 'Put Writing Anchor', 'volume': 31400, 'ltp': 94.6, 'direction': 'BULLISH'},
-            {'timestamp': ts, 'asset': 'BANKNIFTY', 'strike': 50500, 'type': 'CE', 'quadrant': 'Call Supply Cap', 'volume': 15100, 'ltp': 228.4, 'direction': 'BEARISH'}
+            {'timestamp': ts, 'asset': 'NIFTY', 'strike': 24350, 'type': 'CE', 'quadrant': 'Call Buying Flow', 'volume': 49200, 'ltp': 164.5, 'direction': 'BULLISH'},
+            {'timestamp': ts, 'asset': 'NIFTY', 'strike': 24350, 'type': 'PE', 'quadrant': 'Put Writing Anchor', 'volume': 31400, 'ltp': 112.3, 'direction': 'BULLISH'},
+            {'timestamp': ts, 'asset': 'BANKNIFTY', 'strike': 52600, 'type': 'CE', 'quadrant': 'Call Supply Cap', 'volume': 15100, 'ltp': 245.8, 'direction': 'BEARISH'}
         ]
         
     # Commit cleanly mapped data parameters down to database level file layers
@@ -126,16 +128,15 @@ def fetch_live_market_data():
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS ledger (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, asset TEXT, 
-                strike INTEGER, type TEXT, quadrant TEXT, volume INTEGER, ltp REAL, 
-                direction TEXT, market_type TEXT
+                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, asset TEXT, market_type TEXT, expiry TEXT,
+                strike INTEGER, type TEXT, quadrant TEXT, direction TEXT, volume INTEGER, ltp REAL, delta REAL
             )
         """)
         for r in rows:
             cursor.execute("""
-                INSERT INTO ledger (timestamp, asset, strike, type, quadrant, volume, ltp, direction, market_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'EQUITY_DERIVATIVE')
-            """, (r['timestamp'], r['asset'], r['strike'], r['type'], r['quadrant'], r['volume'], r['ltp'], r['direction']))
+                INSERT INTO ledger (timestamp, asset, market_type, expiry, strike, type, quadrant, direction, volume, ltp, delta)
+                VALUES (?, ?, 'INDEX', 'Current Weekly', ?, ?, ?, ?, ?, ?, 0.55)
+            """, (r['timestamp'], r['asset'], r['strike'], r['type'], r['quadrant'], r['direction'], r['volume'], r['ltp']))
         conn.commit()
         conn.close()
     except Exception as db_err:
