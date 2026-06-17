@@ -3,7 +3,6 @@ import pandas as pd
 import random
 import time
 import pytz
-import threading
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
@@ -12,9 +11,7 @@ st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout=
 st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
-    .stTable, table { width: 100% !important; table-layout: fixed !important; text-align: center !important; }
-    th { background-color: #1b1e29 !important; color: #a0a5b5 !important; text-transform: uppercase; font-size: 0.65rem !important; font-weight: bold !important; padding: 6px 4px !important; border-bottom: 2px solid #222634 !important; }
-    td { text-align: center !important; font-size: 0.72rem !important; padding: 6px 4px !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; }
+    .stTable, table { width: 100% !important; table-layout: fixed !important; }
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 25px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
     .section-header.commodity { color: #00ffcc; border-left: 4px solid #00ffcc; }
     .asset-title-banner { background: #141722; padding: 6px; border-radius: 4px; font-weight: bold; color: #fff; font-size: 1rem; border: 1px solid #222634; margin-bottom: 10px; text-align: center; font-family: monospace; }
@@ -78,19 +75,17 @@ def generate_live_spike():
         "ltp": ltp, "delta": surge_pct
     }
 
-# Inject a new spike into memory on every execution frame pass
 if len(st.session_state["internal_data_buffer"]) == 0:
-    for _ in range(5):  # Hydrate seed baseline data rows immediately
+    for _ in range(5):  
         st.session_state["internal_data_buffer"].append(generate_live_spike())
 
-# Tick generation frame increment addition
 st.session_state["internal_data_buffer"].insert(0, generate_live_spike())
 st.session_state["internal_data_buffer"] = st.session_state["internal_data_buffer"][:40]
 
 all_df = pd.DataFrame(st.session_state["internal_data_buffer"])
 
 # -----------------------------------------------------------------------------
-# TERMINAL MATRIX RENDERER
+# TERMINAL MATRIX RENDERER (With explicit column widths to prevent overlapping)
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
@@ -117,19 +112,19 @@ def render_terminal_log_block(asset_filter, df_source):
         surge_val = str(r.get('delta', "+0.0%"))
 
         rows_html += f"""
-        <tr style='background-color: {bg_row_effect} !important; border-bottom: 1px solid #1f2231;'>
-            <td style='color:#a0a5b5; font-family: monospace;'>🕒 {r['timestamp']}</td>
-            <td style='color:#ffffff; font-weight:bold; font-family: monospace;'>🚨 NEW SPIKE</td>
-            <td style='color:#ff9f43; font-weight:900; font-family: monospace;'>{formatted_symbol}</td>
-            <td style='color:#ffffff; font-family: monospace;'>Vol: <span style='font-weight:bold;'>{vol_amt:,}</span></td>
-            <td style='color:{badge_color}; font-weight:bold; font-family: monospace;'>Surge: {surge_val}</td>
-            <td style='color:#ffffff; font-weight:bold; font-family: monospace;'>LTP: {round(float(r.get('ltp', 0.0)), 1)}</td>
+        <tr style='background-color: {bg_row_effect} !important; border-bottom: 1px solid #1f2231; font-size: 0.75rem;'>
+            <td width="15%" style='color:#a0a5b5; font-family: monospace; padding: 6px 4px; text-align: left;'>🕒 {r['timestamp']}</td>
+            <td width="15%" style='color:#ffffff; font-weight:bold; font-family: monospace; padding: 6px 4px; text-align: left;'>🚨 SPIKE</td>
+            <td width="30%" style='color:#ff9f43; font-weight:900; font-family: monospace; padding: 6px 4px; text-align: left;'>{formatted_symbol}</td>
+            <td width="15%" style='color:#ffffff; font-family: monospace; padding: 6px 4px; text-align: left;'>Vol: {vol_amt:,}</td>
+            <td width="15%" style='color:{badge_color}; font-weight:bold; font-family: monospace; padding: 6px 4px; text-align: left;'>{surge_val}</td>
+            <td width="10%" style='color:#ffffff; font-weight:bold; font-family: monospace; padding: 6px 4px; text-align: left;'>LTP: {round(float(r.get('ltp', 0.0)), 1)}</td>
         </tr>"""
         
     table_html = f"""
     <html><head><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'></head>
     <body style='background-color: #0b0c10; padding:0; margin:0; overflow-x:hidden;'>
-    <table class='table table-dark table-borderless m-0' style='width: 100%; table-layout: fixed; text-align:left;'>
+    <table class='table table-dark table-borderless m-0' style='width: 100%; table-layout: fixed;'>
         <tbody>{rows_html}</tbody>
     </table></body></html>
     """
