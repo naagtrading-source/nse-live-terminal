@@ -20,13 +20,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Live Order Book Feed Engine | Real-Time Spike Matrix")
+st.caption("Live Order Book Feed Engine | High-Speed Webhook Sync")
 
 DB_FILE = "terminal_history.db"
 
-# -----------------------------------------------------------------------------
-# DATABASE HANDLER & NET REFRESH MECHANICS
-# -----------------------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -42,57 +39,61 @@ def init_db():
 
 init_db()
 
-# Intercept incoming live data pushes directly from your Google Colab loops
-query_params = st.query_params
-if "action" in query_params and query_params["action"] == "push_spike":
+# -----------------------------------------------------------------------------
+# HIGH-SPEED SESSION RAM STORAGE LAYER
+# -----------------------------------------------------------------------------
+if "live_memory_cache" not in st.session_state:
+    st.session_state["live_memory_cache"] = []
+
+# --- FAST WEBHOOK CAPTURE ---
+# We use st.text_input as a hidden data container that Colab can interact with via API
+incoming_data = st.text_input("Webhook Pipe Connection", key="webhook_receiver", label_visibility="collapsed")
+
+if incoming_data:
     try:
+        import json
+        payload = json.loads(incoming_data)
+        st.session_state["live_memory_cache"].insert(0, payload)
+        
+        # Also write safely to database log back up
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO ledger (timestamp, asset, market_type, expiry, strike, type, quadrant, direction, volume, ltp, delta)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            query_params.get('timestamp', datetime.now().strftime("%H:%M:%S")),
-            query_params.get('asset', 'NIFTY').upper(),
-            query_params.get('market_type', 'INDEX'),
-            query_params.get('expiry', '26DEC'),
-            int(query_params.get('strike', 0)),
-            query_params.get('type', 'CE').upper(),
-            query_params.get('quadrant', 'Instant Spike'),
-            query_params.get('direction', '🟢 BULLISH'),
-            int(query_params.get('volume', 0)),
-            float(query_params.get('ltp', 0.0)),
-            query_params.get('delta', '0.0%')
-        ))
+        """, (payload['timestamp'], payload['asset'], 'INDEX', payload['expiry'], int(payload['strike']), 
+              payload['type'], payload['quadrant'], payload['direction'], int(payload['volume']), 
+              float(payload['ltp']), payload['delta']))
         conn.commit()
         conn.close()
-        st.query_params.clear()  # Clear the address bar query to reset state cleanly
     except Exception as e:
-        print(f"Server insertion slip: {e}")
+        pass
 
 def load_live_spikes_from_db():
-    if not os.path.exists(DB_FILE):
-        return pd.DataFrame()
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        # ORDER BY id DESC ensures new spikes stack on top immediately
-        df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
-        conn.close()
-        return df
-    except:
-        return pd.DataFrame()
+    if st.session_state["live_memory_cache"]:
+        return pd.DataFrame(st.session_state["live_memory_cache"])
+    
+    if os.path.exists(DB_FILE):
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
+            conn.close()
+            return df
+        except:
+            return pd.DataFrame()
+    return pd.DataFrame()
 
 # -----------------------------------------------------------------------------
 # GRAPHICAL TERMINAL MATRIX GENERATOR
 # -----------------------------------------------------------------------------
 def render_terminal_log_block(asset_filter, df_source):
     if df_source.empty:
-        st.markdown("<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting first live order book scrip update from Colab loop...</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#666;font-size:0.85rem;padding-left:10px;'>📡 Awaiting live webhook push confirmation from Colab loop...</p>", unsafe_allow_html=True)
         return
         
     f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
     if f_df.empty:
-        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning live {asset_filter} order book feeds...</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#666;font-size:0.85rem;padding-left:10px;'>Scanning live {asset_filter} webhook stream...</p>", unsafe_allow_html=True)
         return
 
     rows_html = ""
@@ -103,14 +104,11 @@ def render_terminal_log_block(asset_filter, df_source):
         
         contract_type = str(r.get('type', 'CE')).upper()
         strike_val = int(r.get('strike', 0))
-        expiry_lbl = str(r.get('expiry', '26DEC')).replace("Expiry (", "").replace(")", "").upper()
+        expiry_lbl = str(r.get('expiry', '26DEC')).upper()
         
         formatted_symbol = f"{asset_filter}{expiry_lbl}{strike_val}{contract_type}"
         vol_amt = int(r.get('volume', 0))
         surge_val = str(r.get('delta', "+0.0%"))
-        
-        if not surge_val.startswith("+") and not surge_val.startswith("-"):
-            surge_val = f"+{surge_val}"
 
         rows_html += f"""
         <tr style='background-color: {bg_row_effect} !important; border-bottom: 1px solid #1f2231;'>
@@ -134,7 +132,7 @@ def render_terminal_log_block(asset_filter, df_source):
 # -----------------------------------------------------------------------------
 # MAIN APP VIEW DISPATCHER
 # -----------------------------------------------------------------------------
-@st.fragment(run_every=2) # High speed auto-refresh every 2 seconds
+@st.fragment(run_every=1) # Accelerate refresh frame to 1 second
 def render_unified_dashboard_grid():
     all_df = load_live_spikes_from_db()
     
