@@ -11,6 +11,34 @@ st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout=
 st.markdown("""
     <style>
     .main { background-color: #0b0c10; color: #e4e6eb; }
+    
+    /* Global SNY Top Header Styling */
+    .global-top-header {
+        background: linear-gradient(90deg, #1f2231 0%, #141722 100%);
+        padding: 12px 24px;
+        border-radius: 6px;
+        margin-bottom: 20px;
+        border-bottom: 3px solid #ff9f43;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+    .brand-title {
+        color: #ffffff;
+        font-family: 'Montserrat', sans-serif;
+        font-size: 1.8rem;
+        font-weight: 900;
+        letter-spacing: 3px;
+        margin: 0;
+        text-shadow: 0 0 10px rgba(255,159,67,0.3);
+    }
+    .brand-sub {
+        color: #ff9f43;
+        font-family: monospace;
+        font-size: 0.75rem;
+        font-weight: bold;
+    }
+    
     .section-header { background: #1f2231; padding: 8px 15px; border-radius: 4px; font-weight: bold; font-size: 1.1rem; color: #ff9f43; margin-top: 10px; margin-bottom: 15px; border-left: 4px solid #ff9f43; }
     .section-header.stocks { color: #512da8; border-left: 4px solid #7c4dff; }
     .section-header.commodity { color: #00ffcc; border-left: 4px solid #00ffcc; }
@@ -35,6 +63,16 @@ st.markdown("""
     .meta-txt { color: #a0a5b5; font-size: 0.65rem; }
     .vol-txt { color: #ffffff; font-weight: bold; }
     </style>
+""", unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+# GLOBAL TOP BRANDING BANNER
+# -----------------------------------------------------------------------------
+st.markdown("""
+    <div class="global-top-header">
+        <h1 class="brand-title">SNY</h1>
+        <div class="brand-sub">QUANTITATIVE ALGORITHMIC ROUTING ENGINE</div>
+    </div>
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
