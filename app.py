@@ -4,6 +4,7 @@ import os
 import pytz
 import pyotp
 import random
+import time
 from datetime import datetime
 
 st.set_page_config(
@@ -36,44 +37,78 @@ st.caption("Hybrid Core Engine | Real-Time Live Streaming & Automated Off-Hours 
 st.markdown("---")
 
 # ─────────────────────────────────────────────
-# BROKER CONNECTION  (NOT cached — TOTP is time-based, 30s window)
+# BROKER CONNECTION
+# Cached with TTL=1800s (30 min) — TOTP is only needed at login,
+# the session stays valid. Prevents reconnecting on every 5s reload.
 # ─────────────────────────────────────────────
+@st.cache_resource(ttl=1800, show_spinner=False)
 def initialize_broker_connection():
-    required_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
-    missing_keys = [k for k in required_keys if not os.environ.get(k)]
-    if missing_keys:
-        return None, f"MISSING ENV VARS: {', '.join(missing_keys)}", []
+    required_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC",
+                     "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
+    missing = [k for k in required_keys if not os.environ.get(k)]
+    if missing:
+        return None, f"MISSING ENV VARS: {', '.join(missing)}", []
 
     logs = []
     try:
         from neo_api_client import NeoAPI
-        logs.append("✅ neo_api_client imported")
+        logs.append("neo_api_client imported OK")
 
         consumer_key = os.environ.get("KOTAK_CONSUMER_KEY")
         api = NeoAPI(environment='prod', consumer_key=consumer_key)
-        logs.append(f"✅ NeoAPI object created (key: ...{consumer_key[-6:]})")
+        logs.append(f"NeoAPI created (key: ...{consumer_key[-6:]})")
 
         totp_secret = os.environ.get("KOTAK_TOTP_SECRET").replace(" ", "")
         totp_token = pyotp.TOTP(totp_secret).now()
-        logs.append(f"✅ TOTP generated: {totp_token}")
+        logs.append(f"TOTP: {totp_token}")
 
-        mobile = os.environ.get("KOTAK_MOBILE")
-        ucc    = os.environ.get("KOTAK_UCC")
-        login_resp = api.totp_login(mobile_number=mobile, ucc=ucc, totp=totp_token)
-        logs.append(f"✅ totp_login response: {str(login_resp)[:200]}")
+        # Normalise mobile → exactly 10 digits
+        mobile_raw = os.environ.get("KOTAK_MOBILE", "").strip().lstrip("+")
+        if mobile_raw.startswith("91") and len(mobile_raw) == 12:
+            mobile_raw = mobile_raw[2:]
+        elif mobile_raw.startswith("0") and len(mobile_raw) == 11:
+            mobile_raw = mobile_raw[1:]
+        logs.append(f"Mobile: ...{mobile_raw[-4:]} ({len(mobile_raw)} digits)")
 
+        ucc = os.environ.get("KOTAK_UCC")
+        login_resp = api.totp_login(mobile_number=mobile_raw, ucc=ucc, totp=totp_token)
+        # Log only the error/success summary — not the full response (saves memory)
+        if isinstance(login_resp, dict) and login_resp.get('error'):
+            logs.append(f"LOGIN ERROR: {str(login_resp['error'])[:200]}")
+            return None, f"LOGIN_FAILED", logs
+        logs.append(f"totp_login: OK")
+
+        # Extract Auth + SID to pass into validate
         mpin = os.environ.get("KOTAK_MPIN")
-        validate_resp = api.totp_validate(mpin=mpin)
-        logs.append(f"✅ totp_validate response: {str(validate_resp)[:200]}")
+        auth_token, sid = None, None
+        if isinstance(login_resp, dict):
+            data = login_resp.get('data', login_resp)
+            auth_token = data.get('Auth') or data.get('auth') or data.get('token')
+            sid = data.get('SID') or data.get('sid') or data.get('Sid')
 
+        try:
+            if auth_token and sid:
+                validate_resp = api.totp_validate(mpin=mpin, Auth=auth_token, sid=sid)
+            elif auth_token:
+                validate_resp = api.totp_validate(mpin=mpin, Auth=auth_token)
+            else:
+                validate_resp = api.totp_validate(mpin=mpin)
+        except TypeError:
+            validate_resp = api.totp_validate(mpin=mpin)
+
+        if isinstance(validate_resp, dict) and validate_resp.get('error'):
+            logs.append(f"VALIDATE ERROR: {str(validate_resp['error'])[:200]}")
+            return None, "VALIDATE_FAILED", logs
+
+        logs.append("totp_validate: OK")
         return api, "OK", logs
 
     except ImportError as e:
-        logs.append(f"❌ ImportError: {e}")
         return None, f"IMPORT_ERROR: {e}", logs
     except Exception as e:
-        logs.append(f"❌ Exception: {type(e).__name__}: {e}")
-        return None, f"AUTH_ERROR: {type(e).__name__}: {e}", logs
+        logs.append(f"Exception: {type(e).__name__}: {str(e)[:200]}")
+        return None, f"AUTH_ERROR: {type(e).__name__}", logs
+
 
 api_client, api_status, auth_logs = initialize_broker_connection()
 
@@ -81,60 +116,22 @@ api_client, api_status, auth_logs = initialize_broker_connection()
 if api_status == "OK":
     st.success("🟢 Broker Connected — Live data active")
 elif "MISSING" in api_status:
-    st.warning(f"⚠️ {api_status} — Running in OFF-HOURS FALLBACK mode")
+    st.warning(f"⚠️ {api_status}")
 else:
-    st.error(f"🔴 Broker Error — Running in OFF-HOURS FALLBACK mode")
+    st.error(f"🔴 {api_status}")
 
-# ── Diagnostic expander ──────────────────────
-with st.expander("🔧 Auth & Live Data Diagnostic Log", expanded=(api_status != "OK")):
-    st.markdown("**Environment Variables:**")
-    required_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC", "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
-    for k in required_keys:
-        val = os.environ.get(k)
-        if val:
-            st.success(f"✅ {k} — set ({len(val)} chars)")
+# ── Lightweight diagnostic (text only — no st.json) ──
+with st.expander("🔧 Diagnostic Log", expanded=(api_status != "OK")):
+    env_keys = ["KOTAK_CONSUMER_KEY", "KOTAK_MOBILE", "KOTAK_UCC",
+                "KOTAK_MPIN", "KOTAK_TOTP_SECRET"]
+    for k in env_keys:
+        v = os.environ.get(k)
+        if v:
+            st.success(f"✅ {k} ({len(v)} chars)")
         else:
-            st.error(f"❌ {k} — MISSING")
-
-    st.markdown("**Auth Steps:**")
+            st.error(f"❌ {k} MISSING")
     for log in auth_logs:
         st.code(log)
-
-    if api_client is not None:
-        st.markdown("**Live Search Scrip Test (NIFTY on nse_fo):**")
-        try:
-            test_res = api_client.search_scrip(exchange_segment="nse_fo", symbol="NIFTY")
-            records = test_res.get('data', []) if isinstance(test_res, dict) else test_res
-            st.success(f"✅ search_scrip returned {len(records)} records")
-            if records:
-                st.json(records[0])  # Show first record so we can see real field names
-        except Exception as e:
-            st.error(f"❌ search_scrip failed: {type(e).__name__}: {e}")
-
-        st.markdown("**Live Quote Test (first NIFTY FUT token found):**")
-        try:
-            test_res2 = api_client.search_scrip(exchange_segment="nse_fo", symbol="NIFTY")
-            records2 = test_res2.get('data', []) if isinstance(test_res2, dict) else test_res2
-            token_found = None
-            trd_sym_found = ""
-            for item in records2:
-                trd_sym = str(item.get("pTrdSymbol", item.get("trdSym", ""))).upper()
-                if "FUT" in trd_sym:
-                    token_found = item.get("pSymbol", item.get("token"))
-                    trd_sym_found = trd_sym
-                    break
-            if token_found:
-                st.info(f"Using token: {token_found} | symbol: {trd_sym_found}")
-                q = api_client.get_live_quotes([{
-                    "instrument_token": str(token_found),
-                    "exchange_segment": "nse_fo"
-                }])
-                st.success(f"✅ get_live_quotes raw response:")
-                st.json(q)
-            else:
-                st.warning("No FUT token found in NIFTY scrip records")
-        except Exception as e:
-            st.error(f"❌ get_live_quotes failed: {type(e).__name__}: {e}")
 
 # ─────────────────────────────────────────────
 # ASSET CONFIG
@@ -150,21 +147,30 @@ ASSET_ROUTING = {
 }
 
 # ─────────────────────────────────────────────
+# SCRIP CACHE — fetched once per session, not every 5s reload
+# Searching scrip is expensive (large response). Cache by symbol.
+# ─────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_scrip_records(fo_seg, symbol):
+    """Fetch and cache scrip list for a symbol. TTL=1hr."""
+    if api_client is None:
+        return []
+    try:
+        res = api_client.search_scrip(exchange_segment=fo_seg, symbol=symbol)
+        if isinstance(res, dict):
+            return res.get('data', []) or res.get('result', []) or []
+        return res if isinstance(res, list) else []
+    except Exception:
+        return []
+
+# ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
-def safe_scrip_list(res):
-    if isinstance(res, dict):
-        return res.get('data', []) or res.get('result', []) or []
-    elif isinstance(res, list):
-        return res
-    return []
-
 def safe_ltp(q):
-    # Try every known Kotak Neo field name for LTP
-    for key in ('last_traded_price', 'ltp', 'lastPrice', 'c', 'close', 'ltp_rate',
-                'Last_Traded_Price', 'LTP', 'ltP', 'last_price'):
+    for key in ('last_traded_price', 'ltp', 'lastPrice', 'c', 'close',
+                'Last_Traded_Price', 'LTP', 'last_price'):
         val = q.get(key)
-        if val is not None and val != '' and val != 0:
+        if val is not None and val != '':
             try:
                 f = float(val)
                 if f > 0:
@@ -174,8 +180,7 @@ def safe_ltp(q):
     return 0.0
 
 def safe_volume(q):
-    for key in ('volume', 'tradedQuantity', 'vol', 'totalTradedVolume',
-                'ltq', 'Volume', 'total_traded_volume', 'total_buy_quantity'):
+    for key in ('volume', 'tradedQuantity', 'vol', 'totalTradedVolume', 'ltq'):
         val = q.get(key)
         if val is not None:
             try:
@@ -190,18 +195,17 @@ def fetch_ltp(token_id, segment):
             "instrument_token": str(token_id),
             "exchange_segment": segment
         }])
-        if q and isinstance(q, list) and len(q) > 0:
+        if isinstance(q, list) and q:
             return safe_ltp(q[0]), safe_volume(q[0])
-        # Some versions return a dict with a 'data' key
-        if q and isinstance(q, dict):
+        if isinstance(q, dict):
             data = q.get('data', [])
-            if data and len(data) > 0:
+            if data:
                 return safe_ltp(data[0]), safe_volume(data[0])
     except Exception:
         pass
     return 0.0, 0
 
-def normalize_opt_type(raw):
+def normalize_opt(raw):
     raw = str(raw).strip().upper()
     if raw in ('CE', 'CALL', 'C'):
         return 'CE'
@@ -209,218 +213,185 @@ def normalize_opt_type(raw):
         return 'PE'
     return None
 
-def expiry_matches(trd_sym, exp_tag):
-    # exp_tag like "23JUN26" — match case-insensitively inside symbol string
+def expiry_in(trd_sym, exp_tag):
     return exp_tag.upper() in str(trd_sym).upper()
 
-def get_strike_from_item(item):
-    for key in ('pStrikePrice', 'strkPrc', 'strikePrice', 'strike_price', 'Strike_Price'):
-        val = item.get(key)
-        if val is not None:
+def get_token(item):
+    for k in ('pSymbol', 'token', 'instrument_token', 'Token'):
+        v = item.get(k)
+        if v is not None:
+            return v
+    return None
+
+def get_trd_sym(item):
+    for k in ('pTrdSymbol', 'trdSym', 'tradingSymbol'):
+        v = item.get(k)
+        if v:
+            return str(v).upper()
+    return ""
+
+def get_strike(item):
+    for k in ('pStrikePrice', 'strkPrc', 'strikePrice', 'strike_price'):
+        v = item.get(k)
+        if v is not None:
             try:
-                return int(float(val))
+                return int(float(v))
             except (ValueError, TypeError):
                 continue
     return None
 
-def get_token_from_item(item):
-    for key in ('pSymbol', 'token', 'instrument_token', 'Token'):
-        val = item.get(key)
-        if val is not None:
-            return val
-    return None
-
-def get_trd_sym(item):
-    for key in ('pTrdSymbol', 'trdSym', 'tradingSymbol', 'Trading_Symbol'):
-        val = item.get(key)
-        if val is not None:
-            return str(val).upper()
-    return ""
-
 # ─────────────────────────────────────────────
-# HYBRID MARKET DATA CAPTURE
+# LIVE DATA FETCH  (only quotes are fetched on each 10s refresh)
 # ─────────────────────────────────────────────
-def capture_hybrid_market_state():
+def capture_market_state():
     ist_tz = pytz.timezone('Asia/Kolkata')
-    ts_string = datetime.now(ist_tz).strftime("%H:%M:%S")
-    current_snapshot = []
-    live_data_fetched = False
+    ts = datetime.now(ist_tz).strftime("%H:%M:%S")
+    snapshot = []
+    live = False
 
-    if api_client is not None and hasattr(api_client, 'search_scrip'):
-        for symbol, meta in ASSET_ROUTING.items():
-            underlying_price = 0.0
-            exp_tag = meta["exp"]
+    if api_client is None:
+        return snapshot, False
 
-            # ── Step 1: Get all scrip records for this symbol ─────────────
-            try:
-                res_fo = api_client.search_scrip(
-                    exchange_segment=meta["fo_seg"], symbol=symbol
-                )
-                fo_records = safe_scrip_list(res_fo)
-            except Exception:
-                fo_records = []
+    for symbol, meta in ASSET_ROUTING.items():
+        exp_tag = meta["exp"]
+        underlying = 0.0
 
-            # ── Step 2: Resolve underlying price ─────────────────────────
-            if meta["is_fut"]:
-                # Find the futures contract matching our expiry
+        # Use cached scrip records — not re-fetched every reload
+        fo_records = get_scrip_records(meta["fo_seg"], symbol)
+
+        # ── Resolve underlying price ─────────────────────────────────
+        if meta["is_fut"]:
+            for item in fo_records:
+                trd = get_trd_sym(item)
+                if "FUT" in trd and expiry_in(trd, exp_tag):
+                    tok = get_token(item)
+                    if tok:
+                        ltp, _ = fetch_ltp(tok, meta["fo_seg"])
+                        if ltp > 0:
+                            underlying = ltp
+                            break
+            # Fallback: any FUT
+            if underlying <= 0:
                 for item in fo_records:
-                    trd_sym = get_trd_sym(item)
-                    if "FUT" in trd_sym and expiry_matches(trd_sym, exp_tag):
-                        token = get_token_from_item(item)
-                        if token:
-                            ltp_val, _ = fetch_ltp(token, meta["fo_seg"])
-                            if ltp_val > 0:
-                                underlying_price = ltp_val
+                    if "FUT" in get_trd_sym(item):
+                        tok = get_token(item)
+                        if tok:
+                            ltp, _ = fetch_ltp(tok, meta["fo_seg"])
+                            if ltp > 0:
+                                underlying = ltp
                                 break
-                # Fallback: try the nearest FUT if expiry-matched one gives 0
-                if underlying_price <= 0:
-                    for item in fo_records:
-                        trd_sym = get_trd_sym(item)
-                        if "FUT" in trd_sym:
-                            token = get_token_from_item(item)
-                            if token:
-                                ltp_val, _ = fetch_ltp(token, meta["fo_seg"])
-                                if ltp_val > 0:
-                                    underlying_price = ltp_val
-                                    break
-            else:
-                # Equity: use cash segment
-                try:
-                    res_cm = api_client.search_scrip(
-                        exchange_segment=meta["cm_seg"], symbol=symbol
-                    )
-                    cm_records = safe_scrip_list(res_cm)
-                    for item in cm_records:
-                        trd_sym = get_trd_sym(item)
-                        if trd_sym in (f"{symbol}-EQ", symbol, f"{symbol}EQ"):
-                            token = get_token_from_item(item)
-                            if token:
-                                ltp_val, _ = fetch_ltp(token, meta["cm_seg"])
-                                if ltp_val > 0:
-                                    underlying_price = ltp_val
-                                    break
-                    # Fallback: first CM record
-                    if underlying_price <= 0 and cm_records:
-                        token = get_token_from_item(cm_records[0])
-                        if token:
-                            ltp_val, _ = fetch_ltp(token, meta["cm_seg"])
-                            if ltp_val > 0:
-                                underlying_price = ltp_val
-                except Exception:
-                    pass
+        else:
+            cm_records = get_scrip_records(meta["cm_seg"], symbol)
+            for item in cm_records:
+                trd = get_trd_sym(item)
+                if trd in (f"{symbol}-EQ", symbol, f"{symbol}EQ"):
+                    tok = get_token(item)
+                    if tok:
+                        ltp, _ = fetch_ltp(tok, meta["cm_seg"])
+                        if ltp > 0:
+                            underlying = ltp
+                            break
 
-            if underlying_price <= 0.0:
+        if underlying <= 0:
+            continue
+
+        # ── ATM strikes ──────────────────────────────────────────────
+        atm = int(round(underlying / meta["step"]) * meta["step"])
+        strikes = {atm - meta["step"], atm, atm + meta["step"]}
+
+        # ── Walk option chain ────────────────────────────────────────
+        for item in fo_records:
+            try:
+                trd = get_trd_sym(item)
+                if not expiry_in(trd, exp_tag):
+                    continue
+                opt = normalize_opt(item.get("pOptionType", item.get("optTp", "")))
+                if opt is None:
+                    continue
+                strike = get_strike(item)
+                if strike not in strikes:
+                    continue
+                tok = get_token(item)
+                if not tok:
+                    continue
+                ltp, vol = fetch_ltp(tok, meta["fo_seg"])
+                if ltp <= 0:
+                    continue
+                snapshot.append({
+                    "timestamp": ts, "asset": symbol,
+                    "formatted_symbol": trd,
+                    "direction": "CALL ACCUMULATION" if opt == "CE" else "PUT DISTRIBUTION",
+                    "volume": vol, "ltp": ltp,
+                    "underlying": underlying, "status": "🟢 LIVE"
+                })
+                live = True
+            except Exception:
                 continue
 
-            # ── Step 3: Build ATM strike ladder ──────────────────────────
-            atm_strike = int(round(underlying_price / meta["step"]) * meta["step"])
-            target_strikes = {
-                atm_strike - meta["step"],
-                atm_strike,
-                atm_strike + meta["step"],
-            }
+    return snapshot, live
 
-            # ── Step 4: Walk option chain, match expiry + strike ──────────
-            for item in fo_records:
-                try:
-                    trd_sym = get_trd_sym(item)
-                    if not expiry_matches(trd_sym, exp_tag):
-                        continue
 
-                    opt_type = normalize_opt_type(
-                        item.get("pOptionType", item.get("optTp", ""))
-                    )
-                    if opt_type is None:
-                        continue
-
-                    strike_val = get_strike_from_item(item)
-                    if strike_val is None or strike_val not in target_strikes:
-                        continue
-
-                    token_id = get_token_from_item(item)
-                    if not token_id:
-                        continue
-
-                    ltp_val, vol = fetch_ltp(token_id, meta["fo_seg"])
-                    if ltp_val <= 0.0:
-                        continue
-
-                    current_snapshot.append({
-                        "timestamp": ts_string,
-                        "asset": symbol,
-                        "formatted_symbol": trd_sym,
-                        "direction": "CALL ACCUMULATION" if opt_type == "CE" else "PUT DISTRIBUTION",
-                        "volume": vol,
-                        "ltp": ltp_val,
-                        "underlying": underlying_price,
-                        "status": "🟢 LIVE SPEED",
-                    })
-                    live_data_fetched = True
-                except Exception:
-                    continue
-
-    # ── Off-hours synthetic fallback ──────────────────────────────────────
-    if not live_data_fetched:
-        for symbol, meta in ASSET_ROUTING.items():
-            underlying_price = meta["base"] + round(random.uniform(-15, 15), 1)
-            atm_strike = int(round(underlying_price / meta["step"]) * meta["step"])
-            for strike in [atm_strike - meta["step"], atm_strike, atm_strike + meta["step"]]:
-                for opt in ["CE", "PE"]:
-                    ltp = (
-                        round(random.uniform(40.0, 260.0), 1)
-                        if symbol in ["NIFTY", "BANKNIFTY"]
-                        else round(random.uniform(6.0, 65.0), 1)
-                    )
-                    current_snapshot.append({
-                        "timestamp": ts_string,
-                        "asset": symbol,
-                        "formatted_symbol": f"{symbol}{meta['exp']}{strike}{opt}",
-                        "direction": "CALL ACCUMULATION" if opt == "CE" else "PUT DISTRIBUTION",
-                        "volume": random.randint(15000, 125000),
-                        "ltp": ltp,
-                        "underlying": underlying_price,
-                        "status": "🌙 OFF-HOURS FALLBACK",
-                    })
-
-    return current_snapshot
+def fallback_snapshot():
+    ist_tz = pytz.timezone('Asia/Kolkata')
+    ts = datetime.now(ist_tz).strftime("%H:%M:%S")
+    rows = []
+    for symbol, meta in ASSET_ROUTING.items():
+        base = meta["base"] + round(random.uniform(-15, 15), 1)
+        atm = int(round(base / meta["step"]) * meta["step"])
+        for strike in [atm - meta["step"], atm, atm + meta["step"]]:
+            for opt in ["CE", "PE"]:
+                ltp = (round(random.uniform(40, 260), 1)
+                       if symbol in ("NIFTY", "BANKNIFTY")
+                       else round(random.uniform(6, 65), 1))
+                rows.append({
+                    "timestamp": ts, "asset": symbol,
+                    "formatted_symbol": f"{symbol}{meta['exp']}{strike}{opt}",
+                    "direction": "CALL ACCUMULATION" if opt == "CE" else "PUT DISTRIBUTION",
+                    "volume": random.randint(15000, 125000),
+                    "ltp": ltp, "underlying": base,
+                    "status": "🌙 OFF-HOURS FALLBACK"
+                })
+    return rows
 
 # ─────────────────────────────────────────────
-# RUN + BUILD DATAFRAME
+# RUN
 # ─────────────────────────────────────────────
-if "terminal_stream_buffer" not in st.session_state:
-    st.session_state["terminal_stream_buffer"] = []
+if "buffer" not in st.session_state:
+    st.session_state["buffer"] = []
 
-snapshot = capture_hybrid_market_state()
-if snapshot:
-    st.session_state["terminal_stream_buffer"] = snapshot
+snapshot, got_live = capture_market_state()
+if got_live:
+    st.session_state["buffer"] = snapshot
+elif not st.session_state["buffer"]:
+    # Only generate fallback if we have nothing stored yet
+    st.session_state["buffer"] = fallback_snapshot()
 
-all_df = pd.DataFrame(st.session_state["terminal_stream_buffer"])
+all_df = pd.DataFrame(st.session_state["buffer"])
 
 ist_now = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%H:%M:%S')
 live_count = len(all_df[all_df['status'].str.contains('LIVE', na=False)]) if not all_df.empty else 0
-st.caption(f"📦 Rows: {len(all_df)} | 🟢 Live: {live_count} | 🌙 Fallback: {len(all_df) - live_count} | IST: {ist_now}")
+st.caption(
+    f"📦 Rows: {len(all_df)} | 🟢 Live: {live_count} | "
+    f"🌙 Fallback: {len(all_df) - live_count} | IST: {ist_now}"
+)
 
 # ─────────────────────────────────────────────
 # RENDER
 # ─────────────────────────────────────────────
-def render_terminal_log_block(asset_filter, df_source):
-    if df_source.empty:
-        st.warning("⏳ No data loaded yet...")
+def render_block(asset, df):
+    if df.empty:
+        st.warning("⏳ No data...")
         return
-    f_df = df_source[df_source['asset'].str.upper() == asset_filter.upper()].copy()
-    if f_df.empty:
-        st.warning(f"⏳ No rows found for {asset_filter}")
+    f = df[df['asset'].str.upper() == asset.upper()]
+    if f.empty:
+        st.warning(f"⏳ No rows for {asset}")
         return
-    top_record = f_df.iloc[0]
-    st.metric(label="Underlying Anchor Price", value=f"₹{top_record['underlying']:,.1f}")
-    for _, r in f_df.head(6).iterrows():
-        color = "🔵" if "CALL" in str(r['direction']) else "🔴"
+    st.metric("Underlying", f"₹{f.iloc[0]['underlying']:,.1f}")
+    for _, r in f.head(6).iterrows():
+        dot = "🔵" if "CALL" in r['direction'] else "🔴"
         st.info(
-            f"{color} **{r['formatted_symbol']}** | "
-            f"**{r['direction']}** | "
-            f"Vol: {int(r['volume']):,} | "
-            f"**LTP: ₹{r['ltp']}** | "
-            f"[{r['status']}]"
+            f"{dot} **{r['formatted_symbol']}** | **{r['direction']}** | "
+            f"Vol: {int(r['volume']):,} | **LTP: ₹{r['ltp']}** | [{r['status']}]"
         )
 
 tab1, tab2, tab3 = st.tabs(["📈 Equity Indices", "📊 Nifty 50 Stock Options", "🛢️ MCX Commodities"])
@@ -429,37 +400,37 @@ with tab1:
     st.markdown("#### ⚡ Exchange Registered Derivative Indices")
     c1, c2 = st.columns(2)
     with c1:
-        st.error("🦅 NIFTY RADAR")
-        render_terminal_log_block("NIFTY", all_df)
+        st.error("🦅 NIFTY")
+        render_block("NIFTY", all_df)
     with c2:
-        st.error("🦅 BANKNIFTY RADAR")
-        render_terminal_log_block("BANKNIFTY", all_df)
+        st.error("🦅 BANKNIFTY")
+        render_block("BANKNIFTY", all_df)
 
 with tab2:
-    st.markdown("#### 📊 High-Liquidity Equities Whales")
+    st.markdown("#### 📊 High-Liquidity Equities")
     c1, c2, c3 = st.columns(3)
     with c1:
         st.warning("💎 RELIANCE")
-        render_terminal_log_block("RELIANCE", all_df)
+        render_block("RELIANCE", all_df)
     with c2:
         st.warning("💎 HDFCBANK")
-        render_terminal_log_block("HDFCBANK", all_df)
+        render_block("HDFCBANK", all_df)
     with c3:
         st.warning("💎 TCS")
-        render_terminal_log_block("TCS", all_df)
+        render_block("TCS", all_df)
 
 with tab3:
-    st.markdown("#### 🛢️ Multi-Commodity Exchange Block Surges")
+    st.markdown("#### 🛢️ MCX Commodities")
     c1, c2 = st.columns(2)
     with c1:
         st.success("🔥 CRUDEOIL")
-        render_terminal_log_block("CRUDEOIL", all_df)
+        render_block("CRUDEOIL", all_df)
     with c2:
         st.success("✨ GOLD")
-        render_terminal_log_block("GOLD", all_df)
+        render_block("GOLD", all_df)
 
-# Auto-refresh every 5s
+# Auto-refresh every 10s (was 5s — halved to reduce memory pressure)
 st.components.v1.html(
-    "<script>setTimeout(function(){window.location.reload();}, 5000);</script>",
+    "<script>setTimeout(function(){window.location.reload();}, 10000);</script>",
     height=0, width=0
 )
