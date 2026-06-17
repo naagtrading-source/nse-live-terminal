@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
-import random
+import sqlite3
 import streamlit.components.v1 as components
-import db_provider
+from kotak_auth import get_kotak_client
 
 st.set_page_config(page_title="Symmetrical Institutional Flow Terminal", layout="wide", page_icon="🚨")
 
@@ -26,16 +26,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("🚨 Symmetrical Institutional Volatility Terminal")
-st.caption("Advanced Real-Time Multi-Grid Matrix Terminal")
+st.caption("Advanced Real-Time Multi-Grid Matrix Terminal | Live Kotak Securities Feed Nodes")
 
-# Trigger data generation seamlessly on every loop pass
-db_provider.run_automated_generation_cycle()
-all_df = db_provider.load_ledger_from_db()
+DB_FILE = "terminal_history.db"
+
+def load_ledger_from_db():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        df = pd.read_sql_query("SELECT * FROM ledger ORDER BY id DESC", conn)
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
 
 def render_instrument_block(asset_name, df_source):
     if df_source.empty:
         st.markdown("<p style='color:#666;font-size:0.85rem;'>Connecting to data streams...</p>", unsafe_allow_html=True)
         return
+        
     f_df = df_source[df_source['asset'] == asset_name].copy()
     if f_df.empty:
         st.markdown("<p style='color:#666;font-size:0.85rem;'>Awaiting footprint...</p>", unsafe_allow_html=True)
@@ -47,12 +55,13 @@ def render_instrument_block(asset_name, df_source):
     st.markdown(f"<div class='pcr-box'>Volume PCR: {pcr_val}</div>", unsafe_allow_html=True)
         
     latest_block = f_df.sort_values(by='id', ascending=False).head(2)
-    if len(latest_block) == 2:
+    if not latest_block.empty:
         target_strike_val = int(latest_block['strike'].iloc[0])
         opt_ltp = float(latest_block['ltp'].iloc[0])
         vwap_anchor = round(opt_ltp, 1)
+        direction_str = str(latest_block['direction'].iloc[0]).upper()
         
-        if "BULLISH" in str(latest_block['direction'].iloc[0]):
+        if "BULLISH" in direction_str or "PUMP" in direction_str:
             st.markdown(f"""
             <div class='signal-card' style='border: 1px solid #2ebd85; background: rgba(46, 189, 133, 0.05); border-left: 5px solid #2ebd85;'>
                 <p style='color: #2ebd85; margin: 0 0 4px 0; font-size:0.85rem; font-weight:700;'>🔥 ELITE LONG SETUP: STRIKE {target_strike_val}</p>
@@ -79,19 +88,24 @@ def render_instrument_block(asset_name, df_source):
     sorted_group = sorted_group.drop_duplicates(subset=['timestamp', 'type', 'quadrant', 'volume']).head(3)
     rows_html = ""
     for _, r in sorted_group.iterrows():
-        cell_bg = "rgba(46, 189, 133, 0.1)" if "BULLISH" in r['Direction Sign'] else "rgba(246, 70, 93, 0.1)"
-        text_color = "#2ebd85" if "BULLISH" in r['Direction Sign'] else "#f6465d"
+        dir_sign = str(r.get('direction', '')).upper()
+        cell_bg = "rgba(46, 189, 133, 0.1)" if ("BULLISH" in dir_sign or "PUMP" in dir_sign) else "rgba(246, 70, 93, 0.1)"
+        text_color = "#2ebd85" if ("BULLISH" in dir_sign or "PUMP" in dir_sign) else "#f6465d"
         rows_html += f"""
-        <tr style='background-color: {cell_bg} !important;'>
-            <td>{r['timestamp']}</td><td>{r['Target Strike']}</td><td>{r['type']}</td>
-            <td style='color: {text_color}; font-weight:bold;'>{r['Quadrant']}</td><td>{r['volume']:,}</td><td>{r['ltp']:.1f}</td>
+        <tr style='background-color: {cell_bg} !important; border-bottom: 1px solid #222634;'>
+            <td style='color:#a0a5b5;'>{r['timestamp']}</td>
+            <td style='color:#fff; font-weight:bold;'>{int(r['strike'])}</td>
+            <td style='color:#ff9f43;'>{r['type']}</td>
+            <td style='color: {text_color}; font-weight:bold;'>{r['quadrant']}</td>
+            <td style='color:#fff;'>{int(r['volume']):,}</td>
+            <td style='color:#fff;'>{float(r['ltp']:.1f)}</td>
         </tr>"""
         
     if rows_html:
         table_html = f"""
         <html><head><link href='https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css' rel='stylesheet'></head>
         <body style='background-color: #0b0c10; padding:0; margin:0;'>
-        <table class='table table-dark m-0' style='table-layout: fixed; width: 100%; font-size:0.68rem;'>
+        <table class='table table-dark m-0' style='table-layout: fixed; width: 100%; font-size:0.68rem; text-align:center;'>
             <tbody>{rows_html}</tbody>
         </table></body></html>
         """
@@ -99,6 +113,8 @@ def render_instrument_block(asset_name, df_source):
 
 @st.fragment(run_every=10)
 def render_unified_dashboard_grid():
+    all_df = load_ledger_from_db()
+    
     st.markdown("<div class='section-header'>⚡ NATIONAL EXCHANGE EQUITY INDICES</div>", unsafe_allow_html=True)
     idx_col1, idx_col2 = st.columns(2)
     with idx_col1:
