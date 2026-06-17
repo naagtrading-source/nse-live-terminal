@@ -3,4 +3,4 @@ pandas
 pytz
 pyotp
 requests
-neo_api_client
+git+https://github.com/Kotak-Neo/kotak-neo-api.git
