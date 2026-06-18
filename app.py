@@ -1,24 +1,24 @@
 import streamlit as st
 import pandas as pd
-import os, pytz, pyotp, random, re, io, sys, contextlib, threading
+import os, pytz, pyotp, re, io, sys, contextlib, threading
 from datetime import datetime
 from collections import defaultdict
 
-st.set_page_config(page_title="SNY Flow Terminal", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="SNY Block Detector", layout="wide", page_icon="⚡")
 st.markdown("""
 <style>
 body,.stApp{background:#0d1117;color:#e6edf3}
 div[data-testid="stVerticalBlock"]{gap:0.4rem!important}
 .stTabs [data-baseweb="tab-list"]{gap:6px;background:#161b22;padding:6px;border-radius:8px}
 .stTabs [data-baseweb="tab"]{background:#21262d!important;color:#8b949e!important;
-  border-radius:6px;padding:8px 20px;font-weight:500;border:1px solid #30363d!important}
+  border-radius:6px;padding:8px 20px;font-weight:600;border:1px solid #30363d!important}
 .stTabs [aria-selected="true"]{background:#1f6feb!important;color:#fff!important;
   font-weight:700!important;border:1px solid #388bfd!important}
 div[data-testid="metric-container"]{background:#161b22;border:1px solid #30363d;
-  border-radius:8px;padding:12px 16px}
+  border-radius:8px;padding:10px 14px}
 </style>""", unsafe_allow_html=True)
 
-# ── Symbol config (no hardcoded expiries or prices) ───────────────────────────
+# ── Config ─────────────────────────────────────────────────────────────────────
 INDICES = {
     "NIFTY":     {"fo_seg":"nse_fo","step":50,  "lot":75},
     "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "lot":30},
@@ -40,438 +40,411 @@ COMMODITIES = {
     "NATURALGAS":{"fo_seg":"mcx_fo","step":10,   "lot":1250},
     "COPPER":    {"fo_seg":"mcx_fo","step":5,    "lot":2500},
 }
-SPIKE_THRESHOLD = 2.0
-STRIKE_RANGE    = 3
 
-# ── Run SDK calls in a thread to isolate from Streamlit context ───────────────
+# ── Block detection thresholds ────────────────────────────────────────────────
+VOL_SPIKE_MULT   = 2.0       # volume jump > 2× recent average = block
+MIN_VOL_JUMP     = 5000      # absolute floor: ignore tiny jumps
+LARGE_VALUE_CR   = 0.5       # ₹ value of the volume jump > 50 lakh = notable
+OI_CHANGE_PCT    = 5.0       # OI change > 5% = position buildup
+STRIKE_RANGE     = 4         # strikes around ATM to monitor
+FEED_MAX         = 60        # max rows in live feed
+
+# ── Thread isolation for SDK ──────────────────────────────────────────────────
 def _run_isolated(fn):
-    """
-    Execute fn in a separate thread so Streamlit's context-local state
-    doesn't interfere. The Neo SDK calls st.success() etc which writes
-    to whatever Streamlit context is active — in a non-Streamlit thread
-    those calls are no-ops or raise harmless errors we catch.
-    """
-    result = [None]
-    error  = [None]
-    def _worker():
-        # Redirect stdout/stderr to suppress any SDK print output
-        buf = io.StringIO()
+    result=[None]; error=[None]
+    def _w():
+        buf=io.StringIO()
         try:
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                result[0] = fn()
-        except Exception as e:
-            error[0] = e
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
-    t.join(timeout=30)
+                result[0]=fn()
+        except Exception as e: error[0]=e
+    t=threading.Thread(target=_w, daemon=True); t.start(); t.join(timeout=30)
     if error[0]: raise error[0]
     return result[0]
 
-# ── Auth — runs once in background thread, cached 23 min ─────────────────────
 @st.cache_resource(ttl=1380, show_spinner=False)
 def get_api():
-    logs = []
+    logs=[]
     try:
         from neo_api_client import NeoAPI
-        ck     = os.environ.get("KOTAK_CONSUMER_KEY","").strip()
-        secret = os.environ.get("KOTAK_TOTP_SECRET","").replace(" ","")
-        ucc    = os.environ.get("KOTAK_UCC","").strip()
-        mpin   = os.environ.get("KOTAK_MPIN","").strip()
-        mob_raw = os.environ.get("KOTAK_MOBILE","").strip()
-        mob = mob_raw.lstrip("+").replace(" ","").replace("-","")
+        ck=os.environ.get("KOTAK_CONSUMER_KEY","").strip()
+        secret=os.environ.get("KOTAK_TOTP_SECRET","").replace(" ","")
+        ucc=os.environ.get("KOTAK_UCC","").strip()
+        mpin=os.environ.get("KOTAK_MPIN","").strip()
+        mob_raw=os.environ.get("KOTAK_MOBILE","").strip()
+        mob=mob_raw.lstrip("+").replace(" ","").replace("-","")
         if mob.startswith("91") and len(mob)==12: mob=mob[2:]
         elif mob.startswith("0") and len(mob)==11: mob=mob[1:]
-        logs.append(f"mob_raw='{mob_raw}' → cleaned='{mob}' ({len(mob)} digits)")
-
-        padded = secret+"="*(-len(secret)%8)
-        try:    totp=pyotp.TOTP(padded).now()
+        logs.append(f"mob='{mob}' ({len(mob)}d)")
+        padded=secret+"="*(-len(secret)%8)
+        try: totp=pyotp.TOTP(padded).now()
         except: totp=pyotp.TOTP(secret).now()
-        logs.append(f"TOTP={totp}")
-
-        # Kotak Neo v2 expects mobile WITH +91 prefix in some SDK versions.
-        # Try multiple formats until one works.
-        api = _run_isolated(lambda: NeoAPI(environment="prod", consumer_key=ck))
-
-        mobile_formats = [
-            f"+91{mob}",   # +919876543210
-            mob,           # 9876543210
-            f"91{mob}",    # 919876543210
-        ]
-        r1 = None
-        for mfmt in mobile_formats:
-            r1 = _run_isolated(lambda m=mfmt: api.totp_login(
-                mobile_number=m, ucc=ucc, totp=totp))
-            logs.append(f"login try '{mfmt}' → {str(r1)[:120]}")
-            if isinstance(r1, dict) and not r1.get("error"):
-                logs.append(f"✅ login OK with format: {mfmt}")
-                break
-        r2  = _run_isolated(lambda: api.totp_validate(mpin=mpin))
-        logs.append(f"validate={str(r2)[:150]}")
-        return api, "OK", logs
+        api=_run_isolated(lambda: NeoAPI(environment="prod",consumer_key=ck))
+        r1=None
+        for mfmt in [f"+91{mob}", mob, f"91{mob}"]:
+            r1=_run_isolated(lambda m=mfmt: api.totp_login(mobile_number=m,ucc=ucc,totp=totp))
+            logs.append(f"login '{mfmt}' → {str(r1)[:100]}")
+            if isinstance(r1,dict) and not r1.get("error"):
+                logs.append(f"✅ login OK: {mfmt}"); break
+        r2=_run_isolated(lambda: api.totp_validate(mpin=mpin))
+        logs.append(f"validate → {str(r2)[:100]}")
+        return api,"OK",logs
     except Exception as e:
-        import traceback
-        logs.append(traceback.format_exc()[-400:])
-        return None, str(e)[:150], logs
+        import traceback; logs.append(traceback.format_exc()[-350:])
+        return None,str(e)[:120],logs
 
-api, auth_status, auth_logs = get_api()
+api,auth_status,auth_logs=get_api()
 
-# ── All subsequent API calls also run isolated ────────────────────────────────
 def safe_call(fn):
     try: return _run_isolated(fn)
     except: return None
 
-# ── Field extractors ──────────────────────────────────────────────────────────
+# ── Extractors ─────────────────────────────────────────────────────────────────
 def _unwrap(raw):
     if raw is None: return {}
-    if isinstance(raw, list): raw = raw[0] if raw else {}
-    if isinstance(raw, dict):
+    if isinstance(raw,list): raw=raw[0] if raw else {}
+    if isinstance(raw,dict):
         for dk in ("data","Data","result","Result"):
             if dk in raw:
-                inn = raw[dk]
-                if isinstance(inn, list) and inn:
-                    return inn[0] if isinstance(inn[0], dict) else {}
-                if isinstance(inn, dict): return inn
+                inn=raw[dk]
+                if isinstance(inn,list) and inn: return inn[0] if isinstance(inn[0],dict) else {}
+                if isinstance(inn,dict): return inn
         return raw
     return {}
-
 def _f(v):
-    try:
-        return float(str(v).replace(",","").strip())
+    try: return float(str(v).replace(",","").strip())
     except: return 0.0
-
 def _ltp(q):
-    if not isinstance(q, dict): return 0.0
-    for k in ("ltp","last_traded_price","lastPrice","LTP","c","close",
-              "last_price","Close","LastTradePrice","ltp_rate","Ltp","price"):
-        v = q.get(k)
+    if not isinstance(q,dict): return 0.0
+    for k in ("ltp","last_traded_price","lastPrice","LTP","c","close","last_price","Ltp","price"):
+        v=q.get(k)
         if v not in (None,"",0,"0",0.0):
-            f = _f(v); 
-            if f > 0: return f
+            f=_f(v)
+            if f>0: return f
     return 0.0
-
 def _vol(q):
-    if not isinstance(q, dict): return 0
+    if not isinstance(q,dict): return 0
     for k in ("volume","vol","tradedQuantity","totalTradedVolume","ltq","Volume"):
-        v = q.get(k)
+        v=q.get(k)
         if v not in (None,""):
-            try: return max(0, int(_f(v)))
+            try: return max(0,int(_f(v)))
             except: pass
     return 0
-
 def _oi(q):
-    if not isinstance(q, dict): return 0
+    if not isinstance(q,dict): return 0
     for k in ("open_interest","oi","openInterest","OI"):
-        v = q.get(k)
+        v=q.get(k)
         if v not in (None,""):
-            try: return max(0, int(_f(v)))
+            try: return max(0,int(_f(v)))
             except: pass
     return 0
-
+def _ltq(q):
+    """Last traded quantity — the size of the most recent single trade."""
+    if not isinstance(q,dict): return 0
+    for k in ("last_traded_quantity","ltq","lastTradedQty","ltSize","last_trade_qty"):
+        v=q.get(k)
+        if v not in (None,""):
+            try: return max(0,int(_f(v)))
+            except: pass
+    return 0
 def _tok(item):
     for k in ("pSymbol","token","instrument_token","Token","scripToken"):
-        v = item.get(k)
+        v=item.get(k)
         if v is not None: return str(v)
     return None
-
 def _sym(item):
     for k in ("pTrdSymbol","trdSym","tradingSymbol","symbol"):
-        v = item.get(k)
+        v=item.get(k)
         if v: return str(v).upper().strip()
     return ""
-
-def _matches_symbol(trd_sym, target):
-    """
-    Exact symbol match. trd_sym='MIDCPNIFTY26JUNFUT', target='NIFTY'
-    should NOT match. target='MIDCPNIFTY' SHOULD match.
-    The trading symbol must start with target followed by a digit or specific chars.
-    """
-    trd_sym = trd_sym.upper()
-    target  = target.upper()
-    if not trd_sym.startswith(target):
-        return False
-    # Char right after target must be a digit (start of expiry) — not a letter
-    rest = trd_sym[len(target):]
-    if not rest:
-        return True
-    # Reject if next char is a letter (means it's a longer symbol like MIDCPNIFTY vs NIFTY)
-    return rest[0].isdigit() or rest[0] in ("-", " ")
-
+def _matches(trd,target):
+    trd=trd.upper(); target=target.upper()
+    if not trd.startswith(target): return False
+    rest=trd[len(target):]
+    return (not rest) or rest[0].isdigit() or rest[0] in ("-"," ")
 def _opt_type(item):
-    raw = str(item.get("pOptionType", item.get("optTp",""))).strip().upper()
+    raw=str(item.get("pOptionType",item.get("optTp",""))).strip().upper()
     if raw in ("CE","CALL","C"): return "CE"
-    if raw in ("PE","PUT","P"):  return "PE"
+    if raw in ("PE","PUT","P"): return "PE"
     return None
-
 def _strike_val(item):
     for k in ("pStrikePrice","strkPrc","strikePrice","strike_price"):
-        v = item.get(k)
+        v=item.get(k)
         if v is not None:
-            f = _f(v)
-            if f > 0: return f
+            f=_f(v)
+            if f>0: return f
     return None
-
-def _parse_expiry(item):
-    today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+def _parse_exp(item):
+    today=datetime.now(pytz.timezone("Asia/Kolkata")).date()
     for k in ("pExpDate","expiry","expiryDate","ExpiryDate","expDate","pExpiryDate"):
-        v = item.get(k)
+        v=item.get(k)
         if not v: continue
-        s = str(v).strip().upper()
+        s=str(v).strip().upper()
         for fmt in ("%d%b%Y","%d-%b-%Y","%Y-%m-%d","%d/%m/%Y","%d%b%y","%d-%b-%y"):
             try:
-                d = datetime.strptime(s, fmt).date()
-                if d >= today: return d
+                d=datetime.strptime(s,fmt).date()
+                if d>=today: return d
             except: pass
-    s = _sym(item)
-    m = re.search(r'(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})', s)
+    s=_sym(item)
+    m=re.search(r'(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})',s)
     if m:
-        day, mon, yr = m.groups()
-        yr_int = int(yr) if len(yr)==4 else 2000+int(yr)
+        day,mon,yr=m.groups(); yi=int(yr) if len(yr)==4 else 2000+int(yr)
         try:
-            d = datetime.strptime(f"{int(day):02d}{mon}{yr_int}", "%d%b%Y").date()
-            if d >= today: return d
+            d=datetime.strptime(f"{int(day):02d}{mon}{yi}","%d%b%Y").date()
+            if d>=today: return d
         except: pass
     return None
 
-# ── Live quote ────────────────────────────────────────────────────────────────
-def live_quote(token, seg):
+def live_quote(token,seg):
     if not api or not token: return {}
-    raw = safe_call(lambda: api.get_live_quotes(
-        [{"instrument_token": str(token), "exchange_segment": seg}]
-    ))
+    raw=safe_call(lambda: api.get_live_quotes([{"instrument_token":str(token),"exchange_segment":seg}]))
     return _unwrap(raw) if raw else {}
 
-# ── Scrip cache (1 hr) ────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def scrip_list(seg, symbol):
+@st.cache_data(ttl=3600,show_spinner=False)
+def scrip_list(seg,symbol):
     if not api: return []
-    r = safe_call(lambda: api.search_scrip(exchange_segment=seg, symbol=symbol))
-    if isinstance(r, dict): return r.get("data",[]) or r.get("result",[]) or []
-    return r if isinstance(r, list) else []
+    r=safe_call(lambda: api.search_scrip(exchange_segment=seg,symbol=symbol))
+    if isinstance(r,dict): return r.get("data",[]) or r.get("result",[]) or []
+    return r if isinstance(r,list) else []
 
-# ── Volume history ─────────────────────────────────────────────────────────────
-def _vh_update(key, v):
-    if "vh" not in st.session_state: st.session_state["vh"] = defaultdict(list)
-    h = st.session_state["vh"][key]
-    h.append(v)
-    if len(h) > 30: h.pop(0)
+# ── State: track previous volume & OI per instrument ──────────────────────────
+def _state():
+    if "prev" not in st.session_state: st.session_state["prev"]=defaultdict(dict)
+    if "volhist" not in st.session_state: st.session_state["volhist"]=defaultdict(list)
+    if "feed" not in st.session_state: st.session_state["feed"]=[]
+    return st.session_state
 
 def _vh_avg(key):
-    if "vh" not in st.session_state: return 0
-    h = st.session_state["vh"].get(key, [])
-    return sum(h[:-1])/len(h[:-1]) if len(h) >= 3 else 0
+    h=st.session_state["volhist"].get(key,[])
+    return sum(h[:-1])/len(h[:-1]) if len(h)>=3 else 0
 
-def _trend(q, opt):
-    bq = int(_f(q.get("total_buy_quantity", q.get("buyQty", 0)) or 0))
-    sq = int(_f(q.get("total_sell_quantity", q.get("sellQty", 0)) or 0))
-    if bq > 0 and sq > 0:
-        if bq > sq*1.2: return "🟢 BUYING"
-        if sq > bq*1.2: return "🔴 SELLING"
-        return "⚪ NEUTRAL"
-    return "🟢 BULLISH" if opt=="CE" else "🔴 BEARISH"
+def _trend(q,opt):
+    bq=int(_f(q.get("total_buy_quantity",q.get("buyQty",0))or 0))
+    sq=int(_f(q.get("total_sell_quantity",q.get("sellQty",0))or 0))
+    if bq>0 and sq>0:
+        if bq>sq*1.2: return "🟢 BUY"
+        if sq>bq*1.2: return "🔴 SELL"
+        return "⚪ NEUT"
+    return "🟢 BULL" if opt=="CE" else "🔴 BEAR"
 
-# ── Core scanner ──────────────────────────────────────────────────────────────
-def scan_symbol(symbol, meta):
-    fo_seg  = meta["fo_seg"]
-    step    = meta["step"]
-    today   = datetime.now(pytz.timezone("Asia/Kolkata")).date()
-    results = []
+# ── BLOCK DETECTION CORE ──────────────────────────────────────────────────────
+def detect_blocks(category_name, symbols_meta):
+    """
+    For each symbol+strike+expiry, fetch quote, compare to previous snapshot,
+    and flag a block if volume jumps significantly. Returns list of block events.
+    """
+    s=_state()
+    ist=pytz.timezone("Asia/Kolkata")
+    ts=datetime.now(ist).strftime("%H:%M:%S")
+    blocks=[]
 
-    fo = scrip_list(fo_seg, symbol)
-    if not fo: return [], 0.0, []
+    for symbol,meta in symbols_meta.items():
+        fo_seg=meta["fo_seg"]; step=meta["step"]; lot=meta["lot"]
+        today=datetime.now(ist).date()
+        fo=scrip_list(fo_seg,symbol)
+        if not fo: continue
 
-    # Step 1: nearest FUT → underlying price (EXACT symbol match)
-    futs = sorted(
-        [(d, item) for item in fo
-         for d in [_parse_expiry(item)]
-         if d and "FUT" in _sym(item) and _matches_symbol(_sym(item), symbol)],
-        key=lambda x: x[0]
-    )
+        # Underlying from nearest FUT
+        futs=sorted([(d,i) for i in fo for d in [_parse_exp(i)]
+                     if d and "FUT" in _sym(i) and _matches(_sym(i),symbol)],
+                    key=lambda x:x[0])
+        und=0.0
+        for d,item in futs:
+            tok=_tok(item)
+            if tok:
+                v=_ltp(live_quote(tok,fo_seg))
+                if v>0: und=v; break
+        if und<=0 and "cm_seg" in meta:
+            cm=scrip_list(meta["cm_seg"],symbol)
+            for item in cm:
+                if _sym(item) in (f"{symbol}-EQ",symbol,f"{symbol}EQ"):
+                    tok=_tok(item)
+                    if tok:
+                        und=_ltp(live_quote(tok,meta["cm_seg"]))
+                        if und>0: break
+        if und<=0: continue
 
-    und = 0.0
-    for exp_d, item in futs:
-        tok = _tok(item)
-        if not tok: continue
-        q   = live_quote(tok, fo_seg)
-        ltp = _ltp(q)
-        if ltp > 0:
-            und = ltp
-            vol = _vol(q)
-            key = (symbol, "FUT", str(exp_d))
-            _vh_update(key, vol)
-            avg = _vh_avg(key)
-            spk = ((vol-avg)/avg*100) if avg > 0 else 0
-            results.append({
-                "symbol":symbol,"expiry":str(exp_d),"type":"FUT",
-                "strike":"—","opt":"FUT","ltp":ltp,"volume":vol,
-                "oi":_oi(q),"avg_vol":int(avg),"spike_pct":spk,
-                "trend":"📈 LONG","is_spike":spk>=SPIKE_THRESHOLD*100,
-                "underlying":und,"formatted_symbol":_sym(item),
-            })
-            break
+        atm=round(und/step)*step
+        watch=[atm+i*step for i in range(-STRIKE_RANGE,STRIKE_RANGE+1)]
 
-    if und <= 0 and "cm_seg" in meta:
-        cm = scrip_list(meta["cm_seg"], symbol)
-        for item in cm:
-            s = _sym(item)
-            if s in (f"{symbol}-EQ", symbol, f"{symbol}EQ"):
-                tok = _tok(item)
-                if tok:
-                    q = live_quote(tok, meta["cm_seg"])
-                    und = _ltp(q)
-                    if und > 0: break
+        # Scan FUT + options near ATM
+        targets=[]
+        for item in fo:
+            s_item=_sym(item)
+            if not _matches(s_item,symbol): continue
+            d=_parse_exp(item)
+            if not d or d<today: continue
+            if "FUT" in s_item:
+                targets.append((item,"FUT",None,d))
+            else:
+                opt=_opt_type(item)
+                sk=_strike_val(item)
+                if opt and sk and sk in watch:
+                    targets.append((item,opt,int(sk),d))
 
-    if und <= 0: return results, 0.0, []
-
-    expiries = sorted(set(d for d,_ in futs))
-    atm      = round(und/step)*step
-    strikes  = {atm+i*step for i in range(-STRIKE_RANGE, STRIKE_RANGE+1)}
-
-    for item in fo:
-        try:
-            s_item = _sym(item)
-            if not _matches_symbol(s_item, symbol): continue
-            opt = _opt_type(item)
-            if not opt: continue
-            sk = _strike_val(item)
-            if sk is None or abs(sk-atm) > STRIKE_RANGE*step*1.5: continue
-            exp_d = _parse_expiry(item)
-            if not exp_d or exp_d < today: continue
-            tok = _tok(item)
+        for item,kind,strike,exp_d in targets:
+            tok=_tok(item)
             if not tok: continue
-            q   = live_quote(tok, fo_seg)
-            ltp = _ltp(q); vol = _vol(q)
-            if ltp <= 0 and vol <= 0: continue
-            key = (symbol, int(sk), opt, str(exp_d))
-            _vh_update(key, vol)
-            avg = _vh_avg(key)
-            spk = ((vol-avg)/avg*100) if avg > 0 else 0
-            results.append({
-                "symbol":symbol,"expiry":str(exp_d),"type":"OPT",
-                "strike":int(sk),"opt":opt,"ltp":ltp,"volume":vol,
-                "oi":_oi(q),"avg_vol":int(avg),"spike_pct":spk,
-                "trend":_trend(q,opt),
-                "is_spike":spk>=SPIKE_THRESHOLD*100,
-                "underlying":und,"formatted_symbol":_sym(item),
-            })
-        except: continue
+            q=live_quote(tok,fo_seg)
+            vol=_vol(q); ltp=_ltp(q); oi=_oi(q); ltq=_ltq(q)
+            if vol<=0 and ltp<=0: continue
 
-    return results, und, expiries
+            ikey=f"{symbol}|{kind}|{strike}|{exp_d}"
 
-# ── Render ────────────────────────────────────────────────────────────────────
-def render_scanner(label, symbols_meta):
-    st.markdown(f"#### {label}")
-    ist = pytz.timezone("Asia/Kolkata")
-    now = datetime.now(ist); wd = now.weekday()
-    nse_live = (now.replace(hour=9,minute=15,second=0,microsecond=0) <= now <=
-                now.replace(hour=15,minute=30,second=0,microsecond=0)) and wd<5
-    mcx_live = ((wd<5) and now.replace(hour=9,minute=0,second=0,microsecond=0) <= now <=
-                now.replace(hour=23,minute=30,second=0,microsecond=0)) or \
-               ((wd==5) and now.replace(hour=9,minute=0,second=0,microsecond=0) <= now <=
-                now.replace(hour=14,minute=0,second=0,microsecond=0))
-    is_mcx   = any("mcx" in m.get("fo_seg","") for m in symbols_meta.values())
-    is_live  = (mcx_live if is_mcx else nse_live) and auth_status=="OK"
+            # Update volume history
+            s["volhist"][ikey].append(vol)
+            if len(s["volhist"][ikey])>30: s["volhist"][ikey].pop(0)
 
-    if not is_live:
-        seg = "MCX" if is_mcx else "NSE"
-        hrs = "9:00 AM–11:30 PM Mon–Fri, 9:00 AM–2:00 PM Sat" if is_mcx else "9:15 AM–3:30 PM Mon–Fri"
-        st.info(f"🌙 {seg} market closed. Hours: {hrs} IST")
+            prev=s["prev"].get(ikey,{})
+            prev_vol=prev.get("vol",vol)
+            prev_oi =prev.get("oi",oi)
 
-    all_rows=[]; ncols=min(len(symbols_meta),3); cols=st.columns(ncols)
-    for idx,(symbol,meta) in enumerate(symbols_meta.items()):
-        col = cols[idx%ncols]
-        if is_live:
-            rows, und, expiries = scan_symbol(symbol, meta)
-        else:
-            rows, und, expiries = [], 0.0, []
-        if not rows:
-            col.warning(f"⏳ {symbol}: {'No live data' if is_live else 'Market closed'}")
-            continue
-        exp_str = " | ".join(str(e) for e in expiries[:3]) if expiries else "—"
-        col.metric(f"**{symbol}**", f"₹{und:,.1f}")
-        col.caption(f"Active expiries: {exp_str}")
-        for r in sorted(rows, key=lambda x:x["spike_pct"], reverse=True)[:8]:
-            sk  = str(r["strike"]) if r["strike"]!="—" else "FUT"
-            spk = f"+{r['spike_pct']:.0f}%" if r["spike_pct"]>0 else "—"
-            vol = f"{r['volume']:,}" if r["volume"] else "—"
-            avg = f"{r['avg_vol']:,}" if r["avg_vol"]>0 else "new"
-            flg = "🚨 " if r["is_spike"] else ""
-            line = (f"{flg}**{symbol} {sk} {r['opt']}** [{r['expiry']}] | "
-                    f"LTP:₹{r['ltp']} | Vol:{vol}"
-                    +(f" (avg {avg}) | **{spk}**" if r["avg_vol"]>0 else "")
-                    +f" | {r['trend']}")
-            if r["is_spike"]:          col.error(line)
-            elif r["spike_pct"]>50:    col.warning(line)
-            else:                      col.info(line)
-        all_rows.extend(rows)
-    spikes=[r for r in all_rows if r["is_spike"]]
-    if spikes:
-        st.markdown("---\n##### 🚨 Unusual Volume Alerts")
-        st.dataframe(pd.DataFrame([{
-            "Symbol":r["symbol"],"Expiry":r["expiry"],"Strike":r["strike"],
-            "Type":r["opt"],"LTP":f"₹{r['ltp']}","Volume":f"{r['volume']:,}",
-            "Avg":f"{r['avg_vol']:,}" if r["avg_vol"] else "—",
-            "Spike%":f"+{r['spike_pct']:.0f}%","Trend":r["trend"],
-            "Und":f"₹{r['underlying']:,.1f}",
-        } for r in spikes]), use_container_width=True, hide_index=True)
+            vol_jump = vol - prev_vol            # new volume since last tick
+            avg      = _vh_avg(ikey)
+            oi_chg   = oi - prev_oi
+            oi_pct   = (oi_chg/prev_oi*100) if prev_oi>0 else 0
 
-# ── Page header ───────────────────────────────────────────────────────────────
-st.markdown("## ⚡ SNY Institutional Flow Terminal")
-st.caption("Unusual Volume Scanner | Dynamic Expiry Discovery | NSE + MCX")
-st.markdown("---")
+            # ── BLOCK CONDITIONS ──────────────────────────────────────────────
+            is_block=False; reasons=[]
 
-ist_now=datetime.now(pytz.timezone("Asia/Kolkata")); wd=ist_now.weekday()
-nse_l=(ist_now.replace(hour=9,minute=15,second=0,microsecond=0)<=ist_now<=
-       ist_now.replace(hour=15,minute=30,second=0,microsecond=0)) and wd<5
-mcx_l=((wd<5) and ist_now.replace(hour=9,minute=0,second=0,microsecond=0)<=ist_now<=
-       ist_now.replace(hour=23,minute=30,second=0,microsecond=0)) or \
-      ((wd==5) and ist_now.replace(hour=9,minute=0,second=0,microsecond=0)<=ist_now<=
-       ist_now.replace(hour=14,minute=0,second=0,microsecond=0))
+            # 1. Volume jump vs average (PRIMARY)
+            if avg>0 and vol_jump>=MIN_VOL_JUMP and vol_jump >= avg*VOL_SPIKE_MULT:
+                is_block=True
+                reasons.append(f"Vol+{vol_jump:,} ({vol_jump/avg:.1f}×avg)")
 
+            # 2. Large ₹ value of the jump
+            value_cr = (vol_jump * ltp) / 1e7   # in crores
+            if value_cr >= LARGE_VALUE_CR and vol_jump>=MIN_VOL_JUMP:
+                is_block=True
+                reasons.append(f"₹{value_cr:.2f}Cr")
+
+            # 3. Large single trade (LTQ)
+            if ltq >= lot*50 and ltq>0:
+                is_block=True
+                reasons.append(f"BigTrade {ltq:,}")
+
+            # 4. OI buildup
+            if abs(oi_pct) >= OI_CHANGE_PCT and prev_oi>0:
+                is_block=True
+                direction="↑ADD" if oi_chg>0 else "↓EXIT"
+                reasons.append(f"OI {direction} {abs(oi_pct):.0f}%")
+
+            # Save current as previous for next tick
+            s["prev"][ikey]={"vol":vol,"oi":oi,"ltp":ltp}
+
+            if is_block:
+                strike_lbl=str(strike) if strike else "FUT"
+                blocks.append({
+                    "time":ts,"category":category_name,"symbol":symbol,
+                    "strike":strike_lbl,"type":kind,"expiry":str(exp_d),
+                    "ltp":ltp,"vol_jump":vol_jump,"total_vol":vol,
+                    "avg_vol":int(avg),"value_cr":round(value_cr,2),
+                    "ltq":ltq,"oi":oi,"oi_chg_pct":round(oi_pct,1),
+                    "trend":_trend(q,kind if kind in ("CE","PE") else "CE"),
+                    "underlying":und,"reasons":" | ".join(reasons),
+                })
+
+    return blocks
+
+# ── Push blocks into the live feed ────────────────────────────────────────────
+def push_feed(blocks):
+    s=_state()
+    for b in blocks:
+        s["feed"].insert(0, b)   # newest on top
+    # Dedupe consecutive identical and trim
+    s["feed"]=s["feed"][:FEED_MAX]
+
+# ── Market hours ───────────────────────────────────────────────────────────────
+def market_state():
+    now=datetime.now(pytz.timezone("Asia/Kolkata")); wd=now.weekday()
+    nse=(now.replace(hour=9,minute=15,second=0,microsecond=0)<=now<=
+         now.replace(hour=15,minute=30,second=0,microsecond=0)) and wd<5
+    mcx=((wd<5) and now.replace(hour=9,minute=0,second=0,microsecond=0)<=now<=
+         now.replace(hour=23,minute=30,second=0,microsecond=0)) or \
+        ((wd==5) and now.replace(hour=9,minute=0,second=0,microsecond=0)<=now<=
+         now.replace(hour=14,minute=0,second=0,microsecond=0))
+    return nse,mcx
+
+nse_l,mcx_l=market_state()
+
+# ── HEADER ─────────────────────────────────────────────────────────────────────
+st.markdown("## ⚡ SNY Block Order Detector")
+st.caption("Real-time large/unusual order block scanner — Index · Stocks · Commodities")
+
+ist_now=datetime.now(pytz.timezone("Asia/Kolkata"))
 c1,c2,c3,c4=st.columns(4)
 with c1:
-    if auth_status=="OK":
-        st.success("🟢 Broker OK")
-    else:
-        st.error("🔴 Auth Failed")
-with c2:
-    st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
-with c3:
-    st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
-with c4:
-    st.metric("IST",ist_now.strftime("%H:%M:%S"))
+    if auth_status=="OK": st.success("🟢 Broker OK")
+    else: st.error("🔴 Auth Failed")
+with c2: st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
+with c3: st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
+with c4: st.metric("IST",ist_now.strftime("%H:%M:%S"))
 
-with st.expander("🔧 Auth Diagnostic", expanded=(auth_status!="OK")):
+with st.expander("🔧 Diagnostic",expanded=(auth_status!="OK")):
     for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
         v=os.environ.get(k)
-        if v:
-            st.success(f"✅ {k} ({len(v)} chars)")
-        else:
-            st.error(f"❌ {k} MISSING")
+        if v: st.success(f"✅ {k} ({len(v)} chars)")
+        else: st.error(f"❌ {k} MISSING")
     for l in auth_logs: st.code(l)
-    if auth_status=="OK":
-        st.markdown("**Raw quote test — NIFTY nearest FUT:**")
-        try:
-            recs=scrip_list("nse_fo","NIFTY")
-            futs=sorted([(d,i) for i in recs for d in [_parse_expiry(i)]
-                         if d and "FUT" in _sym(i) and _matches_symbol(_sym(i),"NIFTY")],
-                        key=lambda x:x[0])
-            if futs:
-                d,item=futs[0]; tok=_tok(item)
-                raw=safe_call(lambda: api.get_live_quotes(
-                    [{"instrument_token":str(tok),"exchange_segment":"nse_fo"}]))
-                st.code(f"sym={_sym(item)} exp={d} tok={tok}")
-                st.code(f"raw={str(raw)[:600]}")
-            else:
-                st.warning(f"No NIFTY FUT found in {len(recs)} records")
-        except Exception as e: st.error(str(e))
 
 st.markdown("---")
-t1,t2,t3=st.tabs(["📈 Index Options & Futures","📊 Stock Options & Futures","🛢️ MCX Commodities"])
-with t1: render_scanner("📈 Index Options & Futures",INDICES)
-with t2: render_scanner("📊 Stock Options & Futures",STOCKS)
-with t3: render_scanner("🛢️ MCX Commodities",COMMODITIES)
 
-ms=30000 if ((nse_l or mcx_l) and auth_status=="OK") else 300000
+# ── RUN DETECTION (only during market hours) ──────────────────────────────────
+all_blocks=[]
+if auth_status=="OK":
+    if nse_l:
+        all_blocks+=detect_blocks("Index",INDICES)
+        all_blocks+=detect_blocks("Stock",STOCKS)
+    if mcx_l:
+        all_blocks+=detect_blocks("Commodity",COMMODITIES)
+    if all_blocks:
+        push_feed(all_blocks)
+
+s=_state()
+
+# ── LIVE FEED (tape) ──────────────────────────────────────────────────────────
+st.markdown("### 📡 Live Block Feed")
+if not (nse_l or mcx_l):
+    st.info("🌙 Markets closed. Block feed runs during market hours. NSE 9:15–15:30 | MCX 9:00–23:30 IST")
+elif not s["feed"]:
+    st.caption("⏳ Monitoring... no blocks detected yet. Large orders will appear here as they trigger.")
+else:
+    for b in s["feed"][:20]:
+        icon="🔵" if b["type"]=="CE" else "🔴" if b["type"]=="PE" else "🟡"
+        sk=b["strike"]
+        line=(f"`{b['time']}` {icon} **{b['symbol']} {sk} {b['type']}** "
+              f"[{b['expiry']}] | LTP ₹{b['ltp']} | **{b['reasons']}** | {b['trend']}")
+        val=b["value_cr"]
+        if val>=2.0:   st.error(line)
+        elif val>=0.5: st.warning(line)
+        else:          st.info(line)
+
+st.markdown("---")
+
+# ── SUMMARY TABLES per category ───────────────────────────────────────────────
+t1,t2,t3=st.tabs(["📈 Index Blocks","📊 Stock Blocks","🛢️ Commodity Blocks"])
+
+def render_table(cat):
+    rows=[b for b in s["feed"] if b["category"]==cat]
+    if not rows:
+        st.caption(f"No {cat.lower()} blocks yet.")
+        return
+    df=pd.DataFrame([{
+        "Time":b["time"],"Symbol":b["symbol"],"Strike":b["strike"],
+        "Type":b["type"],"Expiry":b["expiry"],"LTP":f"₹{b['ltp']}",
+        "Vol Jump":f"{b['vol_jump']:,}","Total Vol":f"{b['total_vol']:,}",
+        "Avg Vol":f"{b['avg_vol']:,}","Value":f"₹{b['value_cr']}Cr",
+        "OI Δ%":f"{b['oi_chg_pct']:+.0f}%","Trend":b["trend"],
+        "Signals":b["reasons"],
+    } for b in rows])
+    st.dataframe(df,use_container_width=True,hide_index=True)
+
+with t1: render_table("Index")
+with t2: render_table("Stock")
+with t3: render_table("Commodity")
+
+# ── Auto-refresh ───────────────────────────────────────────────────────────────
+ms=15000 if ((nse_l or mcx_l) and auth_status=="OK") else 300000
 st.components.v1.html(
     f"<script>setTimeout(function(){{window.location.reload();}},{ms});</script>",
     height=0,width=0)
