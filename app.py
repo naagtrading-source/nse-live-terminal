@@ -1,8 +1,10 @@
 import streamlit as st
 import pandas as pd
-import os, pytz, pyotp, re, io, sys, contextlib, threading
+import os, pytz, pyotp, re, io, sys, contextlib, threading, gc
 from datetime import datetime
 from collections import defaultdict
+
+gc.enable()
 
 st.set_page_config(page_title="SNY Block Detector", layout="wide", page_icon="⚡")
 st.markdown("""
@@ -19,26 +21,18 @@ div[data-testid="metric-container"]{background:#161b22;border:1px solid #30363d;
 </style>""", unsafe_allow_html=True)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
+# Reduced to top liquid symbols to fit 512MB memory
 INDICES = {
     "NIFTY":     {"fo_seg":"nse_fo","step":50,  "lot":75},
     "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "lot":30},
-    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,  "lot":40},
-    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,  "lot":75},
 }
 STOCKS = {
     "RELIANCE":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "lot":250},
     "HDFCBANK":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "lot":550},
-    "TCS":       {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":100, "lot":175},
-    "INFY":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "lot":400},
-    "ICICIBANK": {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":20,  "lot":700},
-    "SBIN":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":10,  "lot":1500},
 }
 COMMODITIES = {
     "GOLDM":     {"fo_seg":"mcx_fo","step":100,  "lot":10},
-    "SILVERM":   {"fo_seg":"mcx_fo","step":1000, "lot":5},
     "CRUDEOIL":  {"fo_seg":"mcx_fo","step":100,  "lot":100},
-    "NATURALGAS":{"fo_seg":"mcx_fo","step":10,   "lot":1250},
-    "COPPER":    {"fo_seg":"mcx_fo","step":5,    "lot":2500},
 }
 
 # ── Block detection thresholds ────────────────────────────────────────────────
@@ -46,8 +40,8 @@ VOL_SPIKE_MULT   = 2.0       # volume jump > 2× recent average = block
 MIN_VOL_JUMP     = 5000      # absolute floor: ignore tiny jumps
 LARGE_VALUE_CR   = 0.5       # ₹ value of the volume jump > 50 lakh = notable
 OI_CHANGE_PCT    = 5.0       # OI change > 5% = position buildup
-STRIKE_RANGE     = 4         # strikes around ATM to monitor
-FEED_MAX         = 60        # max rows in live feed
+STRIKE_RANGE     = 2         # strikes around ATM to monitor
+FEED_MAX         = 40        # max rows in live feed
 
 # ── Thread isolation for SDK ──────────────────────────────────────────────────
 def _run_isolated(fn):
@@ -200,12 +194,27 @@ def live_quote(token,seg):
     raw=safe_call(lambda: api.get_live_quotes([{"instrument_token":str(token),"exchange_segment":seg}]))
     return _unwrap(raw) if raw else {}
 
-@st.cache_data(ttl=3600,show_spinner=False)
+@st.cache_data(ttl=7200,show_spinner=False,max_entries=10)
 def scrip_list(seg,symbol):
+    """Cache scrip records but STRIP to only fields we need — saves memory.
+    Each raw record has 30+ fields; we keep only 6."""
     if not api: return []
+    import gc
     r=safe_call(lambda: api.search_scrip(exchange_segment=seg,symbol=symbol))
-    if isinstance(r,dict): return r.get("data",[]) or r.get("result",[]) or []
-    return r if isinstance(r,list) else []
+    raw = r.get("data",[]) or r.get("result",[]) if isinstance(r,dict) else (r if isinstance(r,list) else [])
+    # Keep only essential fields to minimize memory
+    slim=[]
+    for item in raw:
+        slim.append({
+            "pSymbol": item.get("pSymbol", item.get("token")),
+            "pTrdSymbol": item.get("pTrdSymbol", item.get("trdSym","")),
+            "pOptionType": item.get("pOptionType", item.get("optTp","")),
+            "pStrikePrice": item.get("pStrikePrice", item.get("strkPrc",0)),
+            "pExpDate": item.get("pExpDate", item.get("expiry","")),
+        })
+    del raw, r
+    gc.collect()
+    return slim
 
 # ── State: track previous volume & OI per instrument ──────────────────────────
 def _state():
@@ -293,7 +302,7 @@ def detect_blocks(category_name, symbols_meta):
 
             # Update volume history
             s["volhist"][ikey].append(vol)
-            if len(s["volhist"][ikey])>30: s["volhist"][ikey].pop(0)
+            if len(s["volhist"][ikey])>10: s["volhist"][ikey].pop(0)
 
             prev=s["prev"].get(ikey,{})
             prev_vol=prev.get("vol",vol)
@@ -343,6 +352,11 @@ def detect_blocks(category_name, symbols_meta):
                     "trend":_trend(q,kind if kind in ("CE","PE") else "CE"),
                     "underlying":und,"reasons":" | ".join(reasons),
                 })
+            del q   # free quote dict immediately
+
+        # Free per-symbol data and collect garbage
+        del fo, targets, futs
+        gc.collect()
 
     return blocks
 
@@ -389,18 +403,28 @@ with st.expander("🔧 Diagnostic",expanded=(auth_status!="OK")):
 
 st.markdown("---")
 
-# ── RUN DETECTION (only during market hours) ──────────────────────────────────
+# ── RUN DETECTION — rotate ONE category per refresh to save memory ────────────
+s=_state()
+if "scan_rotation" not in st.session_state:
+    st.session_state["scan_rotation"]=0
+
 all_blocks=[]
 if auth_status=="OK":
-    if nse_l:
-        all_blocks+=detect_blocks("Index",INDICES)
-        all_blocks+=detect_blocks("Stock",STOCKS)
-    if mcx_l:
-        all_blocks+=detect_blocks("Commodity",COMMODITIES)
-    if all_blocks:
-        push_feed(all_blocks)
+    # Build list of active categories
+    active=[]
+    if nse_l: active+=[("Index",INDICES),("Stock",STOCKS)]
+    if mcx_l: active+=[("Commodity",COMMODITIES)]
 
-s=_state()
+    if active:
+        # Process only ONE category this cycle, rotate next time
+        rot=st.session_state["scan_rotation"] % len(active)
+        cat_name, cat_meta = active[rot]
+        all_blocks = detect_blocks(cat_name, cat_meta)
+        st.session_state["scan_rotation"] = (rot+1) % len(active)
+        st.caption(f"🔄 Scanning: **{cat_name}** ({rot+1}/{len(active)}) — rotates each refresh")
+        if all_blocks:
+            push_feed(all_blocks)
+        gc.collect()
 
 # ── LIVE FEED (tape) ──────────────────────────────────────────────────────────
 st.markdown("### 📡 Live Block Feed")
