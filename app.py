@@ -179,6 +179,23 @@ def _sym(item):
         if v: return str(v).upper().strip()
     return ""
 
+def _matches_symbol(trd_sym, target):
+    """
+    Exact symbol match. trd_sym='MIDCPNIFTY26JUNFUT', target='NIFTY'
+    should NOT match. target='MIDCPNIFTY' SHOULD match.
+    The trading symbol must start with target followed by a digit or specific chars.
+    """
+    trd_sym = trd_sym.upper()
+    target  = target.upper()
+    if not trd_sym.startswith(target):
+        return False
+    # Char right after target must be a digit (start of expiry) — not a letter
+    rest = trd_sym[len(target):]
+    if not rest:
+        return True
+    # Reject if next char is a letter (means it's a longer symbol like MIDCPNIFTY vs NIFTY)
+    return rest[0].isdigit() or rest[0] in ("-", " ")
+
 def _opt_type(item):
     raw = str(item.get("pOptionType", item.get("optTp",""))).strip().upper()
     if raw in ("CE","CALL","C"): return "CE"
@@ -262,11 +279,11 @@ def scan_symbol(symbol, meta):
     fo = scrip_list(fo_seg, symbol)
     if not fo: return [], 0.0, []
 
-    # Step 1: nearest FUT → underlying price
+    # Step 1: nearest FUT → underlying price (EXACT symbol match)
     futs = sorted(
         [(d, item) for item in fo
          for d in [_parse_expiry(item)]
-         if d and "FUT" in _sym(item)],
+         if d and "FUT" in _sym(item) and _matches_symbol(_sym(item), symbol)],
         key=lambda x: x[0]
     )
 
@@ -311,6 +328,8 @@ def scan_symbol(symbol, meta):
 
     for item in fo:
         try:
+            s_item = _sym(item)
+            if not _matches_symbol(s_item, symbol): continue
             opt = _opt_type(item)
             if not opt: continue
             sk = _strike_val(item)
@@ -434,7 +453,8 @@ with st.expander("🔧 Auth Diagnostic", expanded=(auth_status!="OK")):
         try:
             recs=scrip_list("nse_fo","NIFTY")
             futs=sorted([(d,i) for i in recs for d in [_parse_expiry(i)]
-                         if d and "FUT" in _sym(i)], key=lambda x:x[0])
+                         if d and "FUT" in _sym(i) and _matches_symbol(_sym(i),"NIFTY")],
+                        key=lambda x:x[0])
             if futs:
                 d,item=futs[0]; tok=_tok(item)
                 raw=safe_call(lambda: api.get_live_quotes(
