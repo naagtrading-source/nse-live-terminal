@@ -77,17 +77,34 @@ def get_api():
         secret = os.environ.get("KOTAK_TOTP_SECRET","").replace(" ","")
         ucc    = os.environ.get("KOTAK_UCC","").strip()
         mpin   = os.environ.get("KOTAK_MPIN","").strip()
-        mob    = os.environ.get("KOTAK_MOBILE","").strip().lstrip("+")
+        mob_raw = os.environ.get("KOTAK_MOBILE","").strip()
+        mob = mob_raw.lstrip("+").replace(" ","").replace("-","")
         if mob.startswith("91") and len(mob)==12: mob=mob[2:]
         elif mob.startswith("0") and len(mob)==11: mob=mob[1:]
+        logs.append(f"mob_raw='{mob_raw}' → cleaned='{mob}' ({len(mob)} digits)")
+
         padded = secret+"="*(-len(secret)%8)
         try:    totp=pyotp.TOTP(padded).now()
         except: totp=pyotp.TOTP(secret).now()
-        logs.append(f"TOTP={totp} mob=...{mob[-4:]}({len(mob)}d)")
+        logs.append(f"TOTP={totp}")
 
+        # Kotak Neo v2 expects mobile WITH +91 prefix in some SDK versions.
+        # Try multiple formats until one works.
         api = _run_isolated(lambda: NeoAPI(environment="prod", consumer_key=ck))
-        r1  = _run_isolated(lambda: api.totp_login(mobile_number=mob, ucc=ucc, totp=totp))
-        logs.append(f"login={str(r1)[:150]}")
+
+        mobile_formats = [
+            f"+91{mob}",   # +919876543210
+            mob,           # 9876543210
+            f"91{mob}",    # 919876543210
+        ]
+        r1 = None
+        for mfmt in mobile_formats:
+            r1 = _run_isolated(lambda m=mfmt: api.totp_login(
+                mobile_number=m, ucc=ucc, totp=totp))
+            logs.append(f"login try '{mfmt}' → {str(r1)[:120]}")
+            if isinstance(r1, dict) and not r1.get("error"):
+                logs.append(f"✅ login OK with format: {mfmt}")
+                break
         r2  = _run_isolated(lambda: api.totp_validate(mpin=mpin))
         logs.append(f"validate={str(r2)[:150]}")
         return api, "OK", logs
