@@ -392,15 +392,25 @@ mcx_l=((wd<5) and ist_now.replace(hour=9,minute=0,second=0,microsecond=0)<=ist_n
        ist_now.replace(hour=14,minute=0,second=0,microsecond=0))
 
 c1,c2,c3,c4=st.columns(4)
-c1.success("🟢 Broker OK") if auth_status=="OK" else c1.error("🔴 Auth Failed")
-c2.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
-c3.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
-c4.metric("IST",ist_now.strftime("%H:%M:%S"))
+with c1:
+    if auth_status=="OK":
+        st.success("🟢 Broker OK")
+    else:
+        st.error("🔴 Auth Failed")
+with c2:
+    st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
+with c3:
+    st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
+with c4:
+    st.metric("IST",ist_now.strftime("%H:%M:%S"))
 
 with st.expander("🔧 Auth Diagnostic", expanded=(auth_status!="OK")):
     for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
         v=os.environ.get(k)
-        st.success(f"✅ {k} ({len(v)} chars)") if v else st.error(f"❌ {k} MISSING")
+        if v:
+            st.success(f"✅ {k} ({len(v)} chars)")
+        else:
+            st.error(f"❌ {k} MISSING")
     for l in auth_logs: st.code(l)
     if auth_status=="OK":
         st.markdown("**Raw quote test — NIFTY nearest FUT:**")
