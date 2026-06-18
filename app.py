@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
-import os, pytz, pyotp, random, sys, re
-import unittest.mock as mock
+import os, pytz, pyotp, random, re, io, sys, contextlib
 from datetime import datetime
 from collections import defaultdict
 
-st.set_page_config(page_title="SNY Institutional Flow", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="SNY Flow Terminal", layout="wide", page_icon="⚡")
 st.markdown("""
 <style>
 body,.stApp{background:#0d1117;color:#e6edf3}
@@ -23,12 +22,12 @@ st.markdown("## ⚡ SNY Institutional Flow Terminal")
 st.caption("Unusual Volume Scanner | Dynamic Expiry | NSE + MCX Real-Time")
 st.markdown("---")
 
-# ── Symbol registry — NO hardcoded expiries ───────────────────────────────────
+# ── No hardcoded expiries or base prices ──────────────────────────────────────
 INDICES = {
-    "NIFTY":     {"fo_seg":"nse_fo","step":50,   "lot":75},
-    "BANKNIFTY": {"fo_seg":"nse_fo","step":100,  "lot":30},
-    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,   "lot":40},
-    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,   "lot":75},
+    "NIFTY":     {"fo_seg":"nse_fo","step":50,  "lot":75},
+    "BANKNIFTY": {"fo_seg":"nse_fo","step":100, "lot":30},
+    "FINNIFTY":  {"fo_seg":"nse_fo","step":50,  "lot":40},
+    "MIDCPNIFTY":{"fo_seg":"nse_fo","step":25,  "lot":75},
 }
 STOCKS = {
     "RELIANCE":  {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":50,  "lot":250},
@@ -39,62 +38,71 @@ STOCKS = {
     "SBIN":      {"fo_seg":"nse_fo","cm_seg":"nse_cm","step":10,  "lot":1500},
 }
 COMMODITIES = {
-    "GOLDM":      {"fo_seg":"mcx_fo","step":100,  "lot":10},
-    "SILVERM":    {"fo_seg":"mcx_fo","step":1000, "lot":5},
-    "CRUDEOIL":   {"fo_seg":"mcx_fo","step":100,  "lot":100},
-    "NATURALGAS": {"fo_seg":"mcx_fo","step":10,   "lot":1250},
-    "COPPER":     {"fo_seg":"mcx_fo","step":5,    "lot":2500},
+    "GOLDM":     {"fo_seg":"mcx_fo","step":100,  "lot":10},
+    "SILVERM":   {"fo_seg":"mcx_fo","step":1000, "lot":5},
+    "CRUDEOIL":  {"fo_seg":"mcx_fo","step":100,  "lot":100},
+    "NATURALGAS":{"fo_seg":"mcx_fo","step":10,   "lot":1250},
+    "COPPER":    {"fo_seg":"mcx_fo","step":5,    "lot":2500},
 }
-
 SPIKE_THRESHOLD = 2.0
 STRIKE_RANGE    = 3
 
-# ── Suppress Streamlit calls inside Neo SDK ───────────────────────────────────
-def _run(fn):
-    """
-    Run fn while suppressing any streamlit calls the Neo SDK makes internally.
-    Uses stdout/stderr redirect + replaces st references inside neo modules only.
-    Patches are always cleaned up and never leak to the main app.
-    """
-    import io, contextlib
-    dummy = mock.MagicMock()
-    dummy.__enter__ = lambda s: s
-    dummy.__exit__  = lambda s, *a: False
-    dummy.return_value = dummy
+# ── Silence SDK output WITHOUT mock patches ───────────────────────────────────
+# The Neo SDK calls st.success() internally. We silence it by temporarily
+# replacing the st module reference inside neo_api_client with a no-op object.
 
-    # Collect patches ONLY for neo_api_client submodules
-    patches = []
+class _Sink:
+    """Silent sink — absorbs any attribute access and calls."""
+    def __getattr__(self, name): return self
+    def __call__(self, *a, **kw): return self
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def __iter__(self): return iter([])
+    def __bool__(self): return False
+
+_SINK = _Sink()
+
+def _silent(fn):
+    """Run fn with Neo SDK's internal streamlit calls silenced via _Sink."""
+    # Find and temporarily replace 'st' inside neo_api_client modules
+    swapped = {}
     for mod_name, mod in list(sys.modules.items()):
         if not mod_name.startswith("neo_api_client"):
             continue
-        if not hasattr(mod, "__dict__"):
-            continue
-        # Replace the entire 'st' object the module holds
-        if "st" in mod.__dict__:
-            try: patches.append(mock.patch.object(mod, "st", dummy))
-            except: pass
-        # Replace any individually imported st functions
-        for fn_name in ("success","error","warning","info","write","markdown",
-                        "spinner","empty","caption","subheader","header","text"):
-            if fn_name in mod.__dict__:
-                try: patches.append(mock.patch.object(mod, fn_name, dummy))
-                except: pass
+        d = getattr(mod, "__dict__", {})
+        if "st" in d and d["st"] is not _SINK:
+            swapped[mod_name] = ("st", d["st"])
+            d["st"] = _SINK
+        for fn_name in ("success","error","warning","info","write",
+                        "markdown","spinner","empty","caption"):
+            if fn_name in d and callable(d[fn_name]) and d[fn_name] is not _SINK:
+                swapped[f"{mod_name}.{fn_name}"] = (fn_name, d[fn_name], mod_name)
 
-    started = []
-    for p in patches:
-        try: p.start(); started.append(p)
-        except: pass
+    # Also silence individual imported functions
+    for key, val in list(swapped.items()):
+        if len(val) == 3:
+            fn_name, orig, mod_name = val
+            sys.modules[mod_name].__dict__[fn_name] = _SINK
+
+    buf = io.StringIO()
     try:
-        buf = io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
             return fn()
     finally:
-        for p in started:
-            try: p.stop()
-            except: pass
+        # Restore everything
+        for key, val in swapped.items():
+            if "." not in key:
+                mod_name = key
+                attr, orig = val
+                if mod_name in sys.modules:
+                    sys.modules[mod_name].__dict__[attr] = orig
+            else:
+                fn_name, orig, mod_name = val
+                if mod_name in sys.modules:
+                    sys.modules[mod_name].__dict__[fn_name] = orig
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-@st.cache_resource(ttl=1400, show_spinner=False)
+# ── Auth (cached 23 min) ──────────────────────────────────────────────────────
+@st.cache_resource(ttl=1380, show_spinner=False)
 def get_api():
     logs = []
     try:
@@ -111,135 +119,127 @@ def get_api():
         except: totp=pyotp.TOTP(secret).now()
         logs.append(f"TOTP={totp} mob=...{mob[-4:]}({len(mob)}d)")
         api = NeoAPI(environment="prod", consumer_key=ck)
-        r1  = _run(lambda: api.totp_login(mobile_number=mob,ucc=ucc,totp=totp))
-        logs.append(f"login={str(r1)[:120]}")
-        r2  = _run(lambda: api.totp_validate(mpin=mpin))
-        logs.append(f"validate={str(r2)[:120]}")
-        return api,"OK",logs
+        r1  = _silent(lambda: api.totp_login(mobile_number=mob, ucc=ucc, totp=totp))
+        logs.append(f"login={str(r1)[:150]}")
+        r2  = _silent(lambda: api.totp_validate(mpin=mpin))
+        logs.append(f"validate={str(r2)[:150]}")
+        return api, "OK", logs
     except Exception as e:
         import traceback
-        logs.append(traceback.format_exc()[-300:])
-        return None,str(e)[:120],logs
+        logs.append(traceback.format_exc()[-400:])
+        return None, str(e)[:150], logs
 
-api,auth_status,auth_logs = get_api()
-
-# Safety: ensure no st patches are active after auth
-import streamlit as _st_real
-import inspect
-_st_fns = ["success","error","warning","info","write","markdown",
-           "spinner","empty","caption","subheader","header","text"]
-for _fn in _st_fns:
-    _orig = getattr(_st_real, _fn, None)
-    if _orig is not None and isinstance(_orig, mock.MagicMock):
-        # This function got leaked — force reload streamlit to restore
-        import importlib
-        try: importlib.reload(_st_real)
-        except: pass
-        break
+api, auth_status, auth_logs = get_api()
 
 # ── Field extractors ──────────────────────────────────────────────────────────
 def _unwrap(raw):
     if raw is None: return {}
-    if isinstance(raw,list): raw=raw[0] if raw else {}
-    if isinstance(raw,dict):
-        for dk in ("data","Data","result","Result","quotes"):
+    if isinstance(raw, list): raw = raw[0] if raw else {}
+    if isinstance(raw, dict):
+        for dk in ("data","Data","result","Result"):
             if dk in raw:
-                inn=raw[dk]
-                if isinstance(inn,list) and inn: return inn[0] if isinstance(inn[0],dict) else {}
-                if isinstance(inn,dict): return inn
+                inn = raw[dk]
+                if isinstance(inn, list) and inn:
+                    return inn[0] if isinstance(inn[0], dict) else {}
+                if isinstance(inn, dict): return inn
         return raw
     return {}
 
+def _f(val):
+    try:
+        f = float(str(val).replace(",","").strip())
+        return f if f > 0 else 0.0
+    except: return 0.0
+
 def _ltp(q):
-    if not q or not isinstance(q,dict): return 0.0
+    if not isinstance(q, dict): return 0.0
     for k in ("ltp","last_traded_price","lastPrice","LTP","c","close",
-              "last_price","Close","LastTradePrice","ltp_rate","ltP","Ltp",
-              "price","Price","trade_price","regularMarketPrice","lasttradedprice"):
-        v=q.get(k)
+              "last_price","Close","LastTradePrice","ltp_rate","Ltp",
+              "price","Price","trade_price","lasttradedprice"):
+        v = q.get(k)
         if v not in (None,"",0,"0",0.0,"0.0","0.00"):
-            try:
-                f=float(str(v).replace(",",""))
-                if f>0: return f
-            except: pass
+            f = _f(v)
+            if f > 0: return f
     return 0.0
 
 def _vol(q):
-    if not q: return 0
-    for k in ("volume","vol","tradedQuantity","totalTradedVolume","ltq","total_traded_volume","Volume"):
-        v=q.get(k)
-        if v is not None:
-            try: return int(float(str(v).replace(",","")))
+    if not isinstance(q, dict): return 0
+    for k in ("volume","vol","tradedQuantity","totalTradedVolume","ltq","Volume"):
+        v = q.get(k)
+        if v not in (None,""):
+            try: return max(0, int(_f(v)))
             except: pass
     return 0
 
 def _oi(q):
-    if not q: return 0
-    for k in ("open_interest","oi","openInterest","OI","open_int","openint"):
-        v=q.get(k)
-        if v is not None:
-            try: return int(float(str(v).replace(",","")))
+    if not isinstance(q, dict): return 0
+    for k in ("open_interest","oi","openInterest","OI"):
+        v = q.get(k)
+        if v not in (None,""):
+            try: return max(0, int(_f(v)))
             except: pass
     return 0
 
 def _tok(item):
     for k in ("pSymbol","token","instrument_token","Token","scripToken"):
-        v=item.get(k)
+        v = item.get(k)
         if v is not None: return str(v)
     return None
 
 def _sym(item):
-    for k in ("pTrdSymbol","trdSym","tradingSymbol","Trading_Symbol","symbol"):
-        v=item.get(k)
-        if v: return str(v).upper()
+    for k in ("pTrdSymbol","trdSym","tradingSymbol","symbol"):
+        v = item.get(k)
+        if v: return str(v).upper().strip()
     return ""
 
-def _opt(item):
-    raw=str(item.get("pOptionType",item.get("optTp",item.get("option_type","")))).strip().upper()
-    return "CE" if raw in("CE","CALL","C") else "PE" if raw in("PE","PUT","P") else None
-
-def _strike(item):
-    for k in ("pStrikePrice","strkPrc","strikePrice","strike_price","StrikePrice"):
-        v=item.get(k)
-        if v is not None:
-            try: return float(v)
-            except: pass
+def _opt_type(item):
+    raw = str(item.get("pOptionType", item.get("optTp",""))).strip().upper()
+    if raw in ("CE","CALL","C"): return "CE"
+    if raw in ("PE","PUT","P"):  return "PE"
     return None
 
-def _expiry_date(item):
-    """Parse expiry date from scrip item. Returns datetime.date or None."""
-    for k in ("pExpDate","expiry","expiryDate","ExpiryDate","expDate","exp_date","pExpiryDate"):
-        v=item.get(k)
-        if v:
-            s=str(v).strip()
-            for fmt in ("%d%b%Y","%d-%b-%Y","%Y-%m-%d","%d/%m/%Y","%d%b%y","%d-%b-%y","%b%Y"):
-                try: return datetime.strptime(s.upper(),fmt).date()
-                except: pass
-            # Try extracting from trading symbol like GOLDM03JUL26FUT
-            m=re.search(r'(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})',s.upper())
-            if m:
-                d,mo,y=m.groups()
-                yr=int(y) if len(y)==4 else 2000+int(y)
-                try: return datetime.strptime(f"{d}{mo}{yr}","%d%b%Y").date()
-                except: pass
-    # Last resort: parse from trading symbol itself
-    s=_sym(item)
-    m=re.search(r'(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})',s)
+def _strike_val(item):
+    for k in ("pStrikePrice","strkPrc","strikePrice","strike_price"):
+        v = item.get(k)
+        if v is not None:
+            f = _f(v)
+            if f > 0: return f
+    return None
+
+def _parse_expiry(item):
+    """Extract expiry date from item. Returns datetime.date or None."""
+    today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+    # Try dedicated expiry fields first
+    for k in ("pExpDate","expiry","expiryDate","ExpiryDate","expDate","pExpiryDate"):
+        v = item.get(k)
+        if not v: continue
+        s = str(v).strip().upper()
+        for fmt in ("%d%b%Y","%d-%b-%Y","%Y-%m-%d","%d/%m/%Y",
+                    "%d%b%y","%d-%b-%y","%d %b %Y","%d %b %y"):
+            try:
+                d = datetime.strptime(s, fmt).date()
+                if d >= today: return d
+            except: pass
+    # Parse from trading symbol e.g. NIFTY30JUN26FUT, GOLDM03JUL26CE
+    s = _sym(item)
+    m = re.search(r'(\d{1,2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2,4})', s)
     if m:
-        d,mo,y=m.groups()
-        yr=int(y) if len(y)==4 else 2000+int(y)
-        try: return datetime.strptime(f"{d}{mo}{yr}","%d%b%Y").date()
+        day, mon, yr = m.groups()
+        yr_int = int(yr) if len(yr)==4 else 2000+int(yr)
+        try:
+            d = datetime.strptime(f"{int(day):02d}{mon}{yr_int}", "%d%b%Y").date()
+            if d >= today: return d
         except: pass
     return None
 
-# ── Live quote ─────────────────────────────────────────────────────────────────
+# ── Live quote ────────────────────────────────────────────────────────────────
 def live_quote(token, seg):
     if not api or not token: return {}
     try:
-        raw=_run(lambda: api.get_live_quotes(
-            [{"instrument_token":str(token),"exchange_segment":seg}]
+        raw = _silent(lambda: api.get_live_quotes(
+            [{"instrument_token": str(token), "exchange_segment": seg}]
         ))
-        q=_unwrap(raw)
-        return q if isinstance(q,dict) else {}
+        return _unwrap(raw)
     except: return {}
 
 # ── Scrip cache (1 hr) ────────────────────────────────────────────────────────
@@ -247,155 +247,124 @@ def live_quote(token, seg):
 def scrip_list(seg, symbol):
     if not api: return []
     try:
-        r=_run(lambda: api.search_scrip(exchange_segment=seg,symbol=symbol))
-        if isinstance(r,dict): return r.get("data",[]) or r.get("result",[]) or []
-        return r if isinstance(r,list) else []
+        r = _silent(lambda: api.search_scrip(exchange_segment=seg, symbol=symbol))
+        if isinstance(r, dict): return r.get("data",[]) or r.get("result",[]) or []
+        return r if isinstance(r, list) else []
     except: return []
 
-# ── CORE: Discover expiries dynamically ───────────────────────────────────────
-def get_expiries(fo_records, symbol):
-    """
-    From all scrip records, extract unique expiry dates for FUT and OPT contracts.
-    Returns sorted list of (date, date_str) for current + next 2 expiries.
-    """
-    today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
-    dates = set()
-    for item in fo_records:
-        d = _expiry_date(item)
-        if d and d >= today:
-            dates.add(d)
-    sorted_dates = sorted(dates)
-    return sorted_dates[:3]  # current + next 2 expiries
-
-def get_nearest_fut_ltp(fo_records, seg):
-    """
-    Find the nearest-expiry FUT, fetch its LTP. Returns (ltp, token, expiry_date, sym).
-    """
-    today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
-    futs  = []
-    for item in fo_records:
-        s = _sym(item)
-        if "FUT" not in s: continue
-        d = _expiry_date(item)
-        if d and d >= today:
-            futs.append((d, item))
-    if not futs: return 0.0, None, None, ""
-    futs.sort(key=lambda x: x[0])
-    for exp_date, item in futs:
-        tok = _tok(item)
-        if not tok: continue
-        q   = live_quote(tok, seg)
-        ltp = _ltp(q)
-        if ltp > 0:
-            return ltp, tok, exp_date, _sym(item)
-    return 0.0, None, None, ""
-
 # ── Volume history ─────────────────────────────────────────────────────────────
-def update_vol(key, v):
-    if "vh" not in st.session_state: st.session_state["vh"]=defaultdict(list)
-    h=st.session_state["vh"][key]
+def _vh_update(key, v):
+    if "vh" not in st.session_state: st.session_state["vh"] = defaultdict(list)
+    h = st.session_state["vh"][key]
     h.append(v)
-    if len(h)>20: h.pop(0)
+    if len(h) > 30: h.pop(0)
 
-def avg_vol(key):
+def _vh_avg(key):
     if "vh" not in st.session_state: return 0
-    h=st.session_state["vh"].get(key,[])
-    return sum(h[:-1])/len(h[:-1]) if len(h)>=2 else 0
+    h = st.session_state["vh"].get(key, [])
+    return sum(h[:-1])/len(h[:-1]) if len(h) >= 3 else 0
 
 # ── Trend ─────────────────────────────────────────────────────────────────────
-def detect_trend(q, opt):
-    bq=int(float(q.get("total_buy_quantity",q.get("buyQty",q.get("buy_qty",0)))or 0))
-    sq=int(float(q.get("total_sell_quantity",q.get("sellQty",q.get("sell_qty",0)))or 0))
-    if bq>0 and sq>0:
-        if bq>sq*1.2: return "🟢 BUYING"
-        if sq>bq*1.2: return "🔴 SELLING"
+def _trend(q, opt):
+    bq = int(_f(q.get("total_buy_quantity", q.get("buyQty", 0)) or 0))
+    sq = int(_f(q.get("total_sell_quantity", q.get("sellQty", 0)) or 0))
+    if bq > 0 and sq > 0:
+        if bq > sq * 1.2: return "🟢 BUYING"
+        if sq > bq * 1.2: return "🔴 SELLING"
         return "⚪ NEUTRAL"
-    return "🟢 BULLISH" if opt=="CE" else "🔴 BEARISH"
+    return "🟢 BULLISH" if opt == "CE" else "🔴 BEARISH"
 
-# ── Scanner ───────────────────────────────────────────────────────────────────
+# ── Core scanner ──────────────────────────────────────────────────────────────
 def scan_symbol(symbol, meta):
     fo_seg = meta["fo_seg"]
     step   = meta["step"]
-    results= []
+    today  = datetime.now(pytz.timezone("Asia/Kolkata")).date()
+    results = []
 
     fo = scrip_list(fo_seg, symbol)
-    if not fo: return results, 0.0, []
+    if not fo: return [], 0.0, []
 
-    # ── 1. Discover all expiries dynamically ─────────────────────────────────
-    expiries = get_expiries(fo, symbol)  # sorted list of datetime.date
+    # ── Step 1: Find nearest FUT → underlying price ───────────────────────────
+    futs = []
+    for item in fo:
+        s = _sym(item)
+        if "FUT" not in s: continue
+        d = _parse_expiry(item)
+        if d and d >= today: futs.append((d, item))
+    futs.sort(key=lambda x: x[0])
 
-    # ── 2. Get underlying price from nearest FUT ──────────────────────────────
-    und, fut_tok, fut_exp, fut_sym = get_nearest_fut_ltp(fo, fo_seg)
+    und = 0.0
+    for exp_d, item in futs:
+        tok = _tok(item)
+        if not tok: continue
+        q   = live_quote(tok, fo_seg)
+        ltp = _ltp(q)
+        if ltp > 0:
+            und = ltp
+            # Add this FUT to results
+            vol = _vol(q)
+            key = (symbol, "FUT", str(exp_d))
+            _vh_update(key, vol)
+            avg = _vh_avg(key)
+            spk = ((vol-avg)/avg*100) if avg > 0 else 0
+            results.append({
+                "symbol":symbol, "expiry":str(exp_d), "type":"FUT",
+                "strike":"—", "opt":"FUT", "ltp":ltp, "volume":vol,
+                "oi":_oi(q), "avg_vol":int(avg), "spike_pct":spk,
+                "trend":"📈 LONG", "is_spike":spk>=SPIKE_THRESHOLD*100,
+                "underlying":und, "formatted_symbol":_sym(item),
+            })
+            break  # Use only nearest FUT for underlying
 
-    # For stocks: fallback to cash segment
+    # For stocks: cash segment fallback
     if und <= 0 and "cm_seg" in meta:
         cm = scrip_list(meta["cm_seg"], symbol)
         for item in cm:
-            s=_sym(item)
-            if s in (f"{symbol}-EQ",symbol,f"{symbol}EQ"):
-                tok=_tok(item)
+            s = _sym(item)
+            if s in (f"{symbol}-EQ", symbol, f"{symbol}EQ"):
+                tok = _tok(item)
                 if tok:
-                    q=live_quote(tok, meta["cm_seg"])
-                    und=_ltp(q)
-                    if und>0: break
+                    q = live_quote(tok, meta["cm_seg"])
+                    und = _ltp(q)
+                    if und > 0: break
 
-    if und <= 0: return results, 0.0, expiries
+    if und <= 0: return results, 0.0, []
 
-    # ── 3. FUT row for each expiry ────────────────────────────────────────────
-    today = datetime.now(pytz.timezone("Asia/Kolkata")).date()
-    for item in fo:
-        s=_sym(item)
-        if "FUT" not in s: continue
-        d=_expiry_date(item)
-        if not d or d<today: continue
-        tok=_tok(item)
-        if not tok: continue
-        q=live_quote(tok, fo_seg)
-        ltp=_ltp(q); vol=_vol(q)
-        if ltp<=0 and vol<=0: continue
-        key=(symbol,s,"FUT")
-        update_vol(key,vol)
-        avg=avg_vol(key)
-        spk=((vol-avg)/avg*100) if avg>0 else 0
-        results.append({
-            "symbol":symbol,"expiry":str(d),"type":"FUT","strike":"—",
-            "opt":"FUT","ltp":ltp,"volume":vol,"oi":_oi(q),
-            "avg_vol":int(avg),"spike_pct":spk,
-            "trend":"📈 LONG" if ltp>=und*0.999 else "📉 SHORT",
-            "is_spike":spk>=SPIKE_THRESHOLD*100,"underlying":und,
-            "formatted_symbol":s,
-        })
+    # ── Step 2: Collect all unique expiries ───────────────────────────────────
+    expiries = sorted(set(d for d, _ in futs))
 
-    # ── 4. Options for each expiry ────────────────────────────────────────────
-    atm    = round(und/step)*step
-    strikes= [atm+i*step for i in range(-STRIKE_RANGE, STRIKE_RANGE+1)]
+    # ── Step 3: ATM strikes based on live underlying ──────────────────────────
+    atm     = round(und / step) * step
+    strikes = {atm + i*step for i in range(-STRIKE_RANGE, STRIKE_RANGE+1)}
 
+    # ── Step 4: Scan all options ──────────────────────────────────────────────
     for item in fo:
         try:
-            opt=_opt(item)
+            opt = _opt_type(item)
             if not opt: continue
-            sk=_strike(item)
+            sk = _strike_val(item)
             if sk is None: continue
-            # Accept strikes within range of ATM
-            if abs(sk-atm) > STRIKE_RANGE*step*1.5: continue
-            d=_expiry_date(item)
-            if not d or d<today: continue
-            tok=_tok(item)
+            # Only scan strikes near ATM
+            if abs(sk - atm) > STRIKE_RANGE * step * 1.5: continue
+            exp_d = _parse_expiry(item)
+            if not exp_d or exp_d < today: continue
+            tok = _tok(item)
             if not tok: continue
-            q=live_quote(tok,fo_seg)
-            ltp=_ltp(q); vol=_vol(q)
-            if ltp<=0 and vol<=0: continue
-            key=(symbol,sk,opt,str(d))
-            update_vol(key,vol)
-            avg=avg_vol(key)
-            spk=((vol-avg)/avg*100) if avg>0 else 0
+            q   = live_quote(tok, fo_seg)
+            ltp = _ltp(q)
+            vol = _vol(q)
+            if ltp <= 0 and vol <= 0: continue
+            key = (symbol, int(sk), opt, str(exp_d))
+            _vh_update(key, vol)
+            avg = _vh_avg(key)
+            spk = ((vol-avg)/avg*100) if avg > 0 else 0
             results.append({
-                "symbol":symbol,"expiry":str(d),"type":"OPT",
-                "strike":int(sk),"opt":opt,"ltp":ltp,"volume":vol,
-                "oi":_oi(q),"avg_vol":int(avg),"spike_pct":spk,
-                "trend":detect_trend(q,opt),
-                "is_spike":spk>=SPIKE_THRESHOLD*100,"underlying":und,
-                "formatted_symbol":_sym(item),
+                "symbol":symbol, "expiry":str(exp_d), "type":"OPT",
+                "strike":int(sk), "opt":opt, "ltp":ltp, "volume":vol,
+                "oi":_oi(q), "avg_vol":int(avg), "spike_pct":spk,
+                "trend":_trend(q, opt),
+                "is_spike":spk >= SPIKE_THRESHOLD*100,
+                "underlying":und, "formatted_symbol":_sym(item),
             })
         except: continue
 
@@ -404,163 +373,129 @@ def scan_symbol(symbol, meta):
 # ── Render ────────────────────────────────────────────────────────────────────
 def render_scanner(label, symbols_meta):
     st.markdown(f"#### {label}")
-
-    ist=pytz.timezone("Asia/Kolkata")
-    now=datetime.now(ist)
-    wd=now.weekday()
-    nse_live=(now.replace(hour=9,minute=15,second=0)<=now<=now.replace(hour=15,minute=30,second=0)) and wd<5
-    mcx_live=((now.replace(hour=9,minute=0,second=0)<=now<=now.replace(hour=23,minute=30,second=0)) and wd<5) or \
-             ((now.replace(hour=9,minute=0,second=0)<=now<=now.replace(hour=14,minute=0,second=0)) and wd==5)
-    is_mcx=any("mcx" in m.get("fo_seg","") for m in symbols_meta.values())
-    is_live=(mcx_live if is_mcx else nse_live) and auth_status=="OK"
+    ist = pytz.timezone("Asia/Kolkata")
+    now = datetime.now(ist)
+    wd  = now.weekday()
+    nse_live = (now.replace(hour=9,minute=15,second=0,microsecond=0) <= now <=
+                now.replace(hour=15,minute=30,second=0,microsecond=0)) and wd < 5
+    mcx_live = (wd < 5 and now.replace(hour=9,minute=0,second=0,microsecond=0) <= now <=
+                now.replace(hour=23,minute=30,second=0,microsecond=0)) or \
+               (wd == 5 and now.replace(hour=9,minute=0,second=0,microsecond=0) <= now <=
+                now.replace(hour=14,minute=0,second=0,microsecond=0))
+    is_mcx  = any("mcx" in m.get("fo_seg","") for m in symbols_meta.values())
+    is_live = (mcx_live if is_mcx else nse_live) and auth_status == "OK"
 
     if not is_live:
-        seg="MCX" if is_mcx else "NSE"
-        hrs="9:00 AM–11:30 PM (Mon–Fri), 9:00 AM–2:00 PM (Sat)" if is_mcx else "9:15 AM–3:30 PM (Mon–Fri)"
-        st.info(f"🌙 {seg} market closed or broker not connected. Hours: {hrs} IST")
+        seg = "MCX" if is_mcx else "NSE"
+        hrs = "9:00 AM–11:30 PM Mon–Fri, 9:00 AM–2:00 PM Sat" if is_mcx else "9:15 AM–3:30 PM Mon–Fri"
+        st.info(f"🌙 {seg} market closed. Hours: {hrs} IST")
 
-    all_rows=[]
-    ncols=min(len(symbols_meta),3)
-    cols=st.columns(ncols)
+    all_rows = []
+    ncols = min(len(symbols_meta), 3)
+    cols  = st.columns(ncols)
 
-    for idx,(symbol,meta) in enumerate(symbols_meta.items()):
-        col=cols[idx%ncols]
-        with col:
-            if is_live:
-                with st.spinner(f"Scanning {symbol}..."):
-                    rows, und, expiries = scan_symbol(symbol, meta)
-            else:
-                rows, und, expiries = _fake_scan(symbol, meta), meta.get("base",0), []
+    for idx, (symbol, meta) in enumerate(symbols_meta.items()):
+        col = cols[idx % ncols]
+        if is_live:
+            with st.spinner(f"Scanning {symbol}..."):
+                rows, und, expiries = scan_symbol(symbol, meta)
+        else:
+            rows, und, expiries = [], 0.0, []
 
-            if not rows:
-                st.warning(f"⏳ {symbol}: No data")
-                continue
+        if not rows and not is_live:
+            col.warning(f"⏳ {symbol}: Market closed")
+            continue
+        if not rows:
+            col.warning(f"⏳ {symbol}: No live data yet")
+            continue
 
-            und_val = rows[0]["underlying"] if rows else und
-            exp_str = ", ".join(str(e) for e in expiries) if expiries else "—"
-            st.metric(f"**{symbol}**", f"₹{und_val:,.1f}")
-            st.caption(f"Expiries: {exp_str}")
+        exp_str = " | ".join(str(e) for e in expiries[:3]) if expiries else "—"
+        col.metric(f"**{symbol}**", f"₹{und:,.1f}")
+        col.caption(f"Active expiries: {exp_str}")
 
-            # Sort by spike desc, then show top rows
-            rows_s=sorted(rows,key=lambda x:x["spike_pct"],reverse=True)
-            for r in rows_s[:8]:
-                sk   = str(r["strike"]) if r["strike"]!="—" else "FUT"
-                exp  = r["expiry"]
-                spk  = f"+{r['spike_pct']:.0f}%" if r["spike_pct"]>0 else "—"
-                vol  = f"{r['volume']:,}" if r["volume"] else "—"
-                avg  = f"{r['avg_vol']:,}" if r["avg_vol"] else "new"
-                flag = "🚨 " if r["is_spike"] else ""
+        rows_s = sorted(rows, key=lambda x: x["spike_pct"], reverse=True)
+        for r in rows_s[:8]:
+            sk  = str(r["strike"]) if r["strike"] != "—" else "FUT"
+            spk = f"+{r['spike_pct']:.0f}%" if r["spike_pct"] > 0 else "—"
+            vol = f"{r['volume']:,}" if r["volume"] else "—"
+            avg = f"{r['avg_vol']:,}" if r["avg_vol"] > 0 else "new"
+            flg = "🚨 " if r["is_spike"] else ""
+            line = (f"{flg}**{symbol} {sk} {r['opt']}** "
+                    f"[{r['expiry']}] | LTP:₹{r['ltp']} | Vol:{vol}"
+                    + (f" (avg {avg}) | **{spk}**" if r["avg_vol"] > 0 else "")
+                    + f" | {r['trend']}")
+            if r["is_spike"]:         col.error(line)
+            elif r["spike_pct"] > 50: col.warning(line)
+            else:                     col.info(line)
 
-                line = (f"{flag}**{symbol} {sk} {r['opt']}** [{exp}] | "
-                        f"LTP:₹{r['ltp']} | Vol:{vol}"
-                        +(f" (avg {avg}) | Spike:**{spk}**" if r["avg_vol"] else "")
-                        +f" | {r['trend']}")
+        all_rows.extend(rows_s)
 
-                if r["is_spike"]:   st.error(line)
-                elif r["spike_pct"]>50: st.warning(line)
-                else:               st.info(line)
-
-            all_rows.extend(rows_s)
-
-    # Spike summary table
-    spikes=[r for r in all_rows if r["is_spike"]]
+    spikes = [r for r in all_rows if r["is_spike"]]
     if spikes:
         st.markdown("---")
         st.markdown("##### 🚨 Unusual Volume Alerts")
-        df=pd.DataFrame([{
-            "Symbol":r["symbol"],"Expiry":r["expiry"],"Strike":r["strike"],
-            "Type":r["opt"],"LTP":f"₹{r['ltp']}",
-            "Volume":f"{r['volume']:,}","Avg Vol":f"{r['avg_vol']:,}" if r["avg_vol"] else "—",
-            "Spike%":f"+{r['spike_pct']:.0f}%","Trend":r["trend"],
+        df = pd.DataFrame([{
+            "Symbol":r["symbol"], "Expiry":r["expiry"],
+            "Strike":r["strike"], "Type":r["opt"],
+            "LTP":f"₹{r['ltp']}", "Volume":f"{r['volume']:,}",
+            "Avg Vol":f"{r['avg_vol']:,}" if r["avg_vol"] else "—",
+            "Spike%":f"+{r['spike_pct']:.0f}%", "Trend":r["trend"],
             "Underlying":f"₹{r['underlying']:,.1f}",
         } for r in spikes])
-        st.dataframe(df,use_container_width=True,hide_index=True)
-
-# ── Fake scan for off-hours preview ───────────────────────────────────────────
-def _fake_scan(symbol, meta):
-    step=meta.get("step",50); base=meta.get("base",1000)
-    atm=round(base/step)*step; rows=[]
-    today=datetime.now(pytz.timezone("Asia/Kolkata")).date()
-    rows.append({
-        "symbol":symbol,"expiry":str(today),"type":"FUT","strike":"—","opt":"FUT",
-        "ltp":round(base*1.001,1),"volume":random.randint(5000,50000),
-        "oi":random.randint(10000,200000),"avg_vol":random.randint(4000,40000),
-        "spike_pct":random.uniform(-20,60),"trend":"📈 LONG",
-        "is_spike":False,"underlying":base,"formatted_symbol":f"{symbol}FUT",
-    })
-    for i in range(-STRIKE_RANGE,STRIKE_RANGE+1):
-        sk=atm+i*step
-        for opt in["CE","PE"]:
-            vol=random.randint(10000,80000)
-            spike=random.random()<0.15
-            vol_now=vol*random.uniform(2.5,5) if spike else vol
-            avg=vol*random.uniform(0.8,1.2)
-            spk=((vol_now-avg)/avg*100) if avg>0 else 0
-            rows.append({
-                "symbol":symbol,"expiry":str(today),"type":"OPT","strike":sk,
-                "opt":opt,"ltp":round(abs(i-STRIKE_RANGE)*step*0.015*random.uniform(0.7,1.3),1),
-                "volume":int(vol_now),"oi":random.randint(5000,500000),
-                "avg_vol":int(avg),"spike_pct":spk,
-                "trend":random.choice(["🟢 BUYING","🔴 SELLING","⚪ NEUTRAL"]),
-                "is_spike":spk>=SPIKE_THRESHOLD*100,"underlying":base,
-                "formatted_symbol":f"{symbol}{sk}{opt}",
-            })
-    return rows
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
-ist_now=datetime.now(pytz.timezone("Asia/Kolkata"))
-wd=ist_now.weekday()
-nse_l=(ist_now.replace(hour=9,minute=15,second=0)<=ist_now<=ist_now.replace(hour=15,minute=30,second=0)) and wd<5
-mcx_l=((ist_now.replace(hour=9,minute=0,second=0)<=ist_now<=ist_now.replace(hour=23,minute=30,second=0)) and wd<5) or \
-      ((ist_now.replace(hour=9,minute=0,second=0)<=ist_now<=ist_now.replace(hour=14,minute=0,second=0)) and wd==5)
+ist_now = datetime.now(pytz.timezone("Asia/Kolkata"))
+wd      = ist_now.weekday()
+nse_l   = (ist_now.replace(hour=9,minute=15,second=0,microsecond=0) <= ist_now <=
+            ist_now.replace(hour=15,minute=30,second=0,microsecond=0)) and wd < 5
+mcx_l   = (wd < 5 and ist_now.replace(hour=9,minute=0,second=0,microsecond=0) <= ist_now <=
+            ist_now.replace(hour=23,minute=30,second=0,microsecond=0)) or \
+           (wd == 5 and ist_now.replace(hour=9,minute=0,second=0,microsecond=0) <= ist_now <=
+            ist_now.replace(hour=14,minute=0,second=0,microsecond=0))
 
-c1,c2,c3,c4=st.columns(4)
-if auth_status=="OK":
-    c1.success("🟢 Connected")
-else:
-    c1.error("🔴 Auth Failed")
-c2.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
-c3.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
-c4.metric("IST",ist_now.strftime("%H:%M:%S"))
+c1,c2,c3,c4 = st.columns(4)
+c1.success("🟢 Broker Connected") if auth_status=="OK" else c1.error("🔴 Auth Failed")
+c2.metric("NSE", "🟢 OPEN" if nse_l else "🔴 CLOSED")
+c3.metric("MCX", "🟢 OPEN" if mcx_l else "🔴 CLOSED")
+c4.metric("IST", ist_now.strftime("%H:%M:%S"))
 
-with st.expander("🔧 Auth Diagnostic",expanded=(auth_status!="OK")):
+with st.expander("🔧 Auth Diagnostic", expanded=(auth_status!="OK")):
     for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
-        v=os.environ.get(k)
+        v = os.environ.get(k)
         st.success(f"✅ {k} ({len(v)} chars)") if v else st.error(f"❌ {k} MISSING")
     for l in auth_logs: st.code(l)
-    if auth_status=="OK":
-        st.markdown("**Raw quote test — NIFTY FUT:**")
+    if auth_status == "OK":
+        st.markdown("**Raw quote test (NIFTY nearest FUT):**")
         try:
-            recs=scrip_list("nse_fo","NIFTY")
-            futs=[(item,_sym(item)) for item in recs if "FUT" in _sym(item)]
+            recs = scrip_list("nse_fo","NIFTY")
+            futs = sorted(
+                [(item,_sym(item),_parse_expiry(item)) for item in recs
+                 if "FUT" in _sym(item) and _parse_expiry(item)],
+                key=lambda x: x[2]
+            )
             if futs:
-                item,s=futs[0]; tok=_tok(item)
-                raw=_run(lambda: api.get_live_quotes(
+                item,s,d = futs[0]
+                tok = _tok(item)
+                raw = _silent(lambda: api.get_live_quotes(
                     [{"instrument_token":str(tok),"exchange_segment":"nse_fo"}]
                 ))
-                st.code(f"sym={s} tok={tok}")
-                st.code(f"raw={str(raw)[:500]}")
+                st.code(f"Symbol: {s} | Expiry: {d} | Token: {tok}")
+                st.code(f"Raw response: {str(raw)[:600]}")
             else:
-                st.warning("No NIFTY FUT found in scrip list")
-                st.code(f"First 3 records: {[_sym(i) for i in recs[:3]]}")
+                st.warning("No NIFTY FUT found")
+                st.code(f"Total records: {len(recs)}")
+                st.code(f"First 5: {[_sym(i) for i in recs[:5]]}")
         except Exception as e:
             st.error(str(e))
 
 st.markdown("---")
+t1,t2,t3 = st.tabs(["📈 Index Options & Futures","📊 Stock Options & Futures","🛢️ MCX Commodities"])
+with t1: render_scanner("📈 Index Options & Futures", INDICES)
+with t2: render_scanner("📊 Stock Options & Futures", STOCKS)
+with t3: render_scanner("🛢️ MCX Commodities", COMMODITIES)
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-t1,t2,t3=st.tabs([
-    "📈 Index Options & Futures",
-    "📊 Stock Options & Futures",
-    "🛢️ MCX Commodities",
-])
-with t1: render_scanner("📈 Index Options & Futures",INDICES)
-with t2: render_scanner("📊 Stock Options & Futures",STOCKS)
-with t3: render_scanner("🛢️ MCX Commodities",COMMODITIES)
-
-# Refresh: 30s market hours, 5 min otherwise
-is_any_live=(nse_l or mcx_l) and auth_status=="OK"
-ms=30000 if is_any_live else 300000
+ms = 30000 if ((nse_l or mcx_l) and auth_status=="OK") else 300000
 st.components.v1.html(
     f"<script>setTimeout(function(){{window.location.reload();}},{ms});</script>",
-    height=0,width=0)
+    height=0, width=0)
