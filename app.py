@@ -51,29 +51,45 @@ STRIKE_RANGE    = 3
 
 # ── Suppress Streamlit calls inside Neo SDK ───────────────────────────────────
 def _run(fn):
-    """Run fn with all streamlit calls inside Neo SDK suppressed."""
+    """
+    Run fn while suppressing any streamlit calls the Neo SDK makes internally.
+    Uses stdout/stderr redirect + replaces st references inside neo modules only.
+    Patches are always cleaned up and never leak to the main app.
+    """
+    import io, contextlib
     dummy = mock.MagicMock()
+    dummy.__enter__ = lambda s: s
+    dummy.__exit__  = lambda s, *a: False
+    dummy.return_value = dummy
+
+    # Collect patches ONLY for neo_api_client submodules
     patches = []
-    # Only patch inside neo_api_client modules — never patch top-level streamlit
     for mod_name, mod in list(sys.modules.items()):
-        if "neo_api_client" in mod_name and hasattr(mod, "__dict__"):
-            # Patch the 'st' reference if the module imported streamlit as st
-            if hasattr(mod, "st") and mod.st is not dummy:
-                try: patches.append(mock.patch.object(mod, "st", dummy))
+        if not mod_name.startswith("neo_api_client"):
+            continue
+        if not hasattr(mod, "__dict__"):
+            continue
+        # Replace the entire 'st' object the module holds
+        if "st" in mod.__dict__:
+            try: patches.append(mock.patch.object(mod, "st", dummy))
+            except: pass
+        # Replace any individually imported st functions
+        for fn_name in ("success","error","warning","info","write","markdown",
+                        "spinner","empty","caption","subheader","header","text"):
+            if fn_name in mod.__dict__:
+                try: patches.append(mock.patch.object(mod, fn_name, dummy))
                 except: pass
-            # Patch individual streamlit functions if imported directly
-            for fn_name in ("success","error","warning","info","write",
-                            "markdown","spinner","empty","caption","subheader","header"):
-                attr = getattr(mod, fn_name, None)
-                if attr is not None and callable(attr) and attr is not dummy:
-                    try: patches.append(mock.patch.object(mod, fn_name, dummy))
-                    except: pass
+
+    started = []
     for p in patches:
-        try: p.start()
+        try: p.start(); started.append(p)
         except: pass
-    try:    return fn()
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            return fn()
     finally:
-        for p in patches:
+        for p in started:
             try: p.stop()
             except: pass
 
@@ -106,6 +122,20 @@ def get_api():
         return None,str(e)[:120],logs
 
 api,auth_status,auth_logs = get_api()
+
+# Safety: ensure no st patches are active after auth
+import streamlit as _st_real
+import inspect
+_st_fns = ["success","error","warning","info","write","markdown",
+           "spinner","empty","caption","subheader","header","text"]
+for _fn in _st_fns:
+    _orig = getattr(_st_real, _fn, None)
+    if _orig is not None and isinstance(_orig, mock.MagicMock):
+        # This function got leaked — force reload streamlit to restore
+        import importlib
+        try: importlib.reload(_st_real)
+        except: pass
+        break
 
 # ── Field extractors ──────────────────────────────────────────────────────────
 def _unwrap(raw):
@@ -394,7 +424,8 @@ def render_scanner(label, symbols_meta):
     cols=st.columns(ncols)
 
     for idx,(symbol,meta) in enumerate(symbols_meta.items()):
-        with cols[idx%ncols]:
+        col=cols[idx%ncols]
+        with col:
             if is_live:
                 with st.spinner(f"Scanning {symbol}..."):
                     rows, und, expiries = scan_symbol(symbol, meta)
@@ -484,10 +515,13 @@ mcx_l=((ist_now.replace(hour=9,minute=0,second=0)<=ist_now<=ist_now.replace(hour
       ((ist_now.replace(hour=9,minute=0,second=0)<=ist_now<=ist_now.replace(hour=14,minute=0,second=0)) and wd==5)
 
 c1,c2,c3,c4=st.columns(4)
-with c1: st.success("🟢 Connected") if auth_status=="OK" else st.error("🔴 Auth Failed")
-with c2: st.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
-with c3: st.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
-with c4: st.metric("IST",ist_now.strftime("%H:%M:%S"))
+if auth_status=="OK":
+    c1.success("🟢 Connected")
+else:
+    c1.error("🔴 Auth Failed")
+c2.metric("NSE","🟢 OPEN" if nse_l else "🔴 CLOSED")
+c3.metric("MCX","🟢 OPEN" if mcx_l else "🔴 CLOSED")
+c4.metric("IST",ist_now.strftime("%H:%M:%S"))
 
 with st.expander("🔧 Auth Diagnostic",expanded=(auth_status!="OK")):
     for k in ["KOTAK_CONSUMER_KEY","KOTAK_MOBILE","KOTAK_UCC","KOTAK_MPIN","KOTAK_TOTP_SECRET"]:
